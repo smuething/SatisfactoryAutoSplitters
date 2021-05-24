@@ -1,0 +1,32 @@
+{
+	"FileVersion": 3,
+	"Version": 0,
+	"VersionName": "0.1.0",
+	"SemVersion": "0.1.0",
+	"FriendlyName": "Auto Splitters",
+	"Description": "Auto-balancing splitters for the rest of us without time for gigantic load balancers.",
+	"Category": "Modding",
+	"CreatedBy": "SteffenM",
+	"CreatedByURL": "https://github.com/smuething/SatisfactoryAutoSplitters",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "AutoSplitters",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "SML",
+			"SemVersion": "^3.1.1",
+			"Enabled": true
+		}
+	]
+}
