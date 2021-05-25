@@ -480,7 +480,7 @@ int32 AMFGBuildableAutoSplitter::BalanceNetwork(bool RootOnly)
 	TSet<AMFGBuildableAutoSplitter*> SplitterSet;
 	// start by going upstream
 	auto Root = this;
-	for (auto Current = this ; Current ; Current = FindAutoSplitterAfterBelt(Current->mInputs[1],false))
+	for (auto Current = this ; Current ; Current = FindAutoSplitterAfterBelt(Current->mInputs[0],false))
 	{
 		if (SplitterSet.Contains(Current))
 		{
