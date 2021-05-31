@@ -2,7 +2,8 @@
 
 #include "Patching/NativeHookManager.h"
 
-#include "Buildables/FGBuildableAttachmentSplitter.h"
+//#include "FGDismantleInterface.h"
+//#include "Buildables/FGBuildableAttachmentSplitter.h"
 #include "Buildables/MFGBuildableAutoSplitter.h"
 
 #include "AutoSplittersLog.h"
@@ -13,26 +14,33 @@ void FAutoSplittersModule::StartupModule()
 {
 
 #if UE_BUILD_SHIPPING
-
-	void* Instance = GetMutableDefault<AFGBuildableAttachmentSplitter>();
 	
-	UE_LOG(LogAutoSplitters,Display,TEXT("Instance ptr is %d"),Instance);
-
-	/*
-	SUBSCRIBE_METHOD_VIRTUAL(AFGBuildableAttachmentSplitter::Upgrade_Implementation,Instance,[](auto& Call, AFGBuildableAttachmentSplitter* self, AActor* newActor)
+	auto UpgradeHook = [](auto& Call, UObject* self, AActor* newActor)
 	{
-		UE_LOG(LogAutoSplitters,Display,TEXT("Hook was hit"));
-		Call(self,newActor);
-	});
-	*/
 
-	/*
-	SUBSCRIBE_METHOD_VIRTUAL(AFGBuildableAttachmentSplitter::FillDistributionTable,Instance,[](auto& Call, AFGBuildableAttachmentSplitter* self, float dt)
-	{
-		UE_LOG(LogAutoSplitters,Display,TEXT("Hook was hit"));
-		Call(self,newActor);
-	});
-	*/
+		UE_LOG(LogAutoSplitters,Display,TEXT("Entered hook for IFGDismantleInterface::Execute_Upgrade()"));
+	
+		AMFGBuildableAutoSplitter* Target = Cast<AMFGBuildableAutoSplitter>(newActor);
+		if (!Target)
+		{
+			UE_LOG(LogAutoSplitters,Display,TEXT("Target is not an AMFGBuildableAutoSplitter, bailing out"));
+			return;
+		}
+		AFGBuildableAttachmentSplitter* Source = Cast<AFGBuildableAttachmentSplitter>(self);
+		if (!Source)
+		{
+			UE_LOG(LogAutoSplitters,Display,TEXT("self is not an AFGBuildableAttachmentSplitter, bailing out"));
+			return;
+		}
+
+		//UE_LOG(LogAutoSplitters,Display,TEXT("Calling UpgradeFromSplitter()"));
+		//Target->UpgradeFromSplitter(*Source);
+
+		UE_LOG(LogAutoSplitters,Display,TEXT("Cancelling original call"));
+		Call.Cancel();
+	};
+	
+	SUBSCRIBE_METHOD(IFGDismantleInterface::Execute_Upgrade,UpgradeHook);
 
 #endif // UE_BUILD_SHIPPING
 
