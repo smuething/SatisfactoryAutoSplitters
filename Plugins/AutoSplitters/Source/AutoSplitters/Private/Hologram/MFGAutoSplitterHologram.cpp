@@ -11,7 +11,7 @@ void AMFGAutoSplitterHologram::ConfigureComponents(AFGBuildable* inBuildable) co
 
 	AMFGBuildableAutoSplitter* Splitter = Cast<AMFGBuildableAutoSplitter>(inBuildable);
 
-	if (IsUpgrade())
+	if (HasAuthority() && IsUpgrade())
 	{
 		UE_LOG(LogAutoSplitters,Display,TEXT("Upgrading, working around broken connection handling of upstream hologram"));
 		std::array<UFGFactoryConnectionComponent*,4> SnappedConnections;
@@ -50,7 +50,7 @@ void AMFGAutoSplitterHologram::ConfigureComponents(AFGBuildable* inBuildable) co
 			{
 				Connections[i]->SetConnection(SnappedConnections[i]);
 			}
-		}		
+		}
 	}
 	else
 	{

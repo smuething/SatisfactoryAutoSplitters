@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.5
+
+#### Change
+
+- Make upgrade process more robust by comparing world coordinates when matching components.
+- Delay all modifying operations until all `BeginPlay()` calls during the initial savegame initialization have
+  finished.
+- Add configuration system based on SML's config support.
+- Add a fall-back upgrade method that simply removes all splitters when upgrading from 0.2.0 or older. Can be
+  enabled through configuration.
+- Make input rate configurable and fix some problems with propagation of auto state to upstream splitter.
+- Take into account overclocking settings of downstream factories when calculating distribution shares. Limitations:
+  - The calculation is based on fixed precision arithmetic, for now limited to a precision of 0.01%.
+  - The allocation is rather finicky, as it will bail out if the shares cannot be precisely allocated without any remainder. 
+  - The allocation is only updated when interacting with the network by building or removing components or showing the splitter
+    UI. It will not auto-detect changes to the overclock rate.
+- First internal changes to pave the way for multiplayer support.
 ## 0.3.0
 
 ### Changes
