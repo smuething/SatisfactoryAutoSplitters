@@ -94,8 +94,26 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
     if (!HasAuthority())
         return;
 
+    // keep outputs from pulling while we're in here
+    mNextInventorySlot = make_array<NUM_OUTPUTS>(MAX_INVENTORY_SIZE);
+
     // skip direct splitter base class, it doesn't do anything useful for us
     AFGBuildableConveyorAttachment::Factory_Tick(dt);
+
+    if (DEBUG_THIS_SPLITTER)
+    {
+        UE_LOG(LogAutoSplitters,Display,TEXT("transient=%d persistent=%d cycleLength=%d leftInCycle=%d outputstates=(%d %d %d) remaining=(%d %d %d)"),
+            mTransientState,mPersistentState,
+            mCycleLength,mLeftInCycle,
+            mOutputStates[0],mOutputStates[1],mOutputStates[2],
+            mRemainingItems[0],mRemainingItems[1],mRemainingItems[2]
+            );
+        UE_LOG(LogAutoSplitters,Display,TEXT("targetInput=%d outputRates=(%d %d %d) itemsPerCycle=(%d %d %d)"),
+            mTargetInputRate,
+            mIntegralOutputRates[0],mIntegralOutputRates[1],mIntegralOutputRates[2],
+            mItemsPerCycle[0],mItemsPerCycle[1],mItemsPerCycle[2]
+            );
+    }
 
     if (mNeedsInitialDistributionSetup)
     {
@@ -118,7 +136,6 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
         mGrabbedItems[i] = 0;
         mAssignedItems[i] = 0;
     }
-    mNextInventorySlot = make_array<NUM_OUTPUTS>(MAX_INVENTORY_SIZE);
     mInventorySlotEnd = make_array<NUM_OUTPUTS>(0);
     mAssignedOutputs = make_array<MAX_INVENTORY_SIZE>(-1);
 
@@ -155,6 +172,11 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
         return;
     }
 
+    if (IsPersistentFlagSet(NEEDS_DISTRIBUTION_SETUP))
+    {
+        SetupDistribution();
+    }
+
     mCachedInventoryItemCount = 0;
     auto PopulatedInventorySlots = make_array<MAX_INVENTORY_SIZE>(-1);
     for (int32 i = 0 ; i < mInventorySizeX ; ++i)
@@ -184,8 +206,14 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
     mCycleTime += dt;
     auto AssignableItems = make_array<NUM_OUTPUTS>(0);
 
+    auto NextInventorySlot = make_array<NUM_OUTPUTS>(MAX_INVENTORY_SIZE);
+
     for (int32 ActiveSlot = 0 ; ActiveSlot < mCachedInventoryItemCount ; ++ActiveSlot)
     {
+        if (DEBUG_THIS_SPLITTER)
+        {
+            UE_LOG(LogAutoSplitters,Display,TEXT("slot=%d"),ActiveSlot);
+        }
         int32 Next = -1;
         float Priority = -INFINITY;
         for (int32 i = 0; i < NUM_OUTPUTS; ++i)
@@ -237,9 +265,13 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
         if (Next >= 0)
         {
             const auto Slot = PopulatedInventorySlots[ActiveSlot];
+            if (DEBUG_THIS_SPLITTER)
+            {
+                UE_LOG(LogAutoSplitters,Display,TEXT("Slot %d -> actual slot %d"),ActiveSlot,Slot);
+            }
             mAssignedOutputs[Slot] = Next;
-            if (mNextInventorySlot[Next] == MAX_INVENTORY_SIZE)
-                mNextInventorySlot[Next] = Slot;
+            if (NextInventorySlot[Next] == MAX_INVENTORY_SIZE)
+                NextInventorySlot[Next] = Slot;
             mInventorySlotEnd[Next] = Slot + 1;
             ++mAssignedItems[Next];
         }
@@ -267,6 +299,9 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
             mAssignedItems[2],mBlockedFor[2]
             );
     }
+
+    // make new items available to outputs
+    mNextInventorySlot = NextInventorySlot;
 }
 
 
@@ -327,6 +362,7 @@ void AMFGBuildableAutoSplitter::PostLoadGame_Implementation(int32 saveVersion, i
 
 void AMFGBuildableAutoSplitter::BeginPlay()
 {
+
     // we need to fix the connection wiring before calling into our parent class
     if (HasAuthority())
     {
@@ -379,6 +415,10 @@ bool AMFGBuildableAutoSplitter::Factory_GrabOutput_Implementation(UFGFactoryConn
 
     if (mAssignedItems[Output] <= mGrabbedItems[Output])
     {
+        if (!IsSet(mOutputStates[Output],EOutputState::Connected))
+        {
+            mBalancingRequired = true;
+        }
         return false;
     }
 
@@ -386,6 +426,10 @@ bool AMFGBuildableAutoSplitter::Factory_GrabOutput_Implementation(UFGFactoryConn
     {
         if (mAssignedOutputs[Slot] == Output)
         {
+            if (Slot > 8)
+            {
+                UE_LOG(LogAutoSplitters,Error,TEXT("Hit invalid slot %d for output %d"),Slot,Output);
+            }
             FInventoryStack Stack;
             mBufferInventory->GetStackFromIndex(Slot,Stack);
             mBufferInventory->RemoveAllFromIndex(Slot);
@@ -406,6 +450,11 @@ bool AMFGBuildableAutoSplitter::Factory_GrabOutput_Implementation(UFGFactoryConn
     }
 
     UE_LOG(LogAutoSplitters,Warning,TEXT("Output %d: No valid output found, this should not happen!"),Output);
+
+    if (!IsSet(mOutputStates[Output],EOutputState::Connected))
+    {
+        mBalancingRequired = true;
+    }
 
     return false;
 }
@@ -436,8 +485,8 @@ void AMFGBuildableAutoSplitter::SetupDistribution(bool LoadingSave)
 
     if (std::none_of(mOutputStates.begin(),mOutputStates.end(),[](auto State) { return IsSet(State,EOutputState::Connected); }))
     {
-        mIntegralOutputRates.Init(NUM_OUTPUTS,FRACTIONAL_RATE_MULTIPLIER);
-        mItemsPerCycle.Init(NUM_OUTPUTS,0);
+        mIntegralOutputRates.Init(FRACTIONAL_RATE_MULTIPLIER,NUM_OUTPUTS);
+        mItemsPerCycle.Init(0,NUM_OUTPUTS);
         return;
     }
 
@@ -512,6 +561,8 @@ void AMFGBuildableAutoSplitter::SetupDistribution(bool LoadingSave)
         mLeftInCycle = 0;
         PrepareCycle(false);
     }
+
+    ClearPersistentFlag(NEEDS_DISTRIBUTION_SETUP);
 }
 
 void AMFGBuildableAutoSplitter::PrepareCycle(const bool AllowCycleExtension, const bool Reset)
@@ -785,7 +836,6 @@ void AMFGBuildableAutoSplitter::Server_ReplicationEnabledTimeout()
     ClearTransientFlag(IS_REPLICATION_ENABLED);
 }
 
-constexpr std::array<int32,4> GPartner_Map = {0,1,3,5};
 
 void AMFGBuildableAutoSplitter::FixupConnections()
 {
@@ -795,7 +845,7 @@ void AMFGBuildableAutoSplitter::FixupConnections()
     TInlineComponentArray<UFGFactoryConnectionComponent*, 6> Connections;
     GetComponents(Connections);
 
-    UE_LOG(LogAutoSplitters, Display, TEXT("Fixing up Auto Splitter connections for 0.3.0 upgrade"), Connections.Num());
+    UE_LOG(LogAutoSplitters, Display, TEXT("Fixing up Auto Splitter connections for 0.3.0 upgrade"));
 
 #if AUTO_SPLITTERS_DEBUG
 
@@ -806,8 +856,6 @@ void AMFGBuildableAutoSplitter::FixupConnections()
         mOutputStates[0],mOutputStates[1],mOutputStates[2]
         );
 
-#endif
-
     TInlineComponentArray<UFGFactoryConnectionComponent*, 6> Partners;
     int32 PartnerCount = 0;
 
@@ -817,8 +865,6 @@ void AMFGBuildableAutoSplitter::FixupConnections()
         UFGFactoryConnectionComponent* Partner = c->IsConnected() ? c->GetConnection() : nullptr;
         Partners.Add(Partner);
         PartnerCount += Partner != nullptr;
-
-#if AUTO_SPLITTERS_DEBUG
 
         auto Pos = this->GetTransform().InverseTransformPosition(c->GetComponentLocation());
         auto Rot = this->GetTransform().InverseTransformRotation(c->GetComponentRotation().Quaternion());
@@ -875,150 +921,31 @@ void AMFGBuildableAutoSplitter::FixupConnections()
         }
 
         ++ii;
+    }
 
 #endif
 
-        if (Partner)
-        {
-            Module->mBrokenConnectionPairs.Add({c,Partner});
-        }
+    auto& [This,OldBluePrintConnections,ConveyorConnections] = Module->mPreUpgradeSplitters.Add_GetRef({this,{},{}});
 
-        if (c->GetName() == TEXT("Output0") || c->GetName() == TEXT("Input0"))
-        {
-            UE_LOG(LogAutoSplitters,Display,TEXT("Detaching component %s and scheduling for destruction"),*c->GetName());
-            //c->DetachFromComponent(FDetachmentTransformRules::KeepWorldTransform);
-            RemoveOwnedComponent(c);
-            Module->mOldBlueprintConnections.Add(c);
-            c = nullptr;
-        }
-    }
-
-    auto Candidates = make_array<4,UFGFactoryConnectionComponent*>(nullptr);
-    int32 Assigned = 0;
-    const bool RemoveAllConveyors = FAutoSplitters_ConfigStruct::GetActiveConfig().Upgrade.RemoveAllConveyors;
-    TInlineComponentArray<UFGFactoryConnectionComponent*,4> UnclearPartners;
-
-    int32 idebug = 0;
-    for (auto Partner : Partners)
+    for (auto Connection : Connections)
     {
-        if (!Partner)
-        {
-            UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: Partner %d does not exist, skipping"),this,idebug);
-            ++idebug;
-            continue;
-        }
-        auto PartnerPos = Partner->GetComponentLocation();
-        UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: Partner %p (%d) position=%s"),this,Partner,idebug,*PartnerPos.ToString());
-        float Distance = INFINITY;
-        int32 MatchingConnection = -1;
-        bool LoopError = false;
-        for (int32 i = 0 ; i < 4 ; ++i)
-        {
-            auto ConnectionPos = Connections[i]->GetComponentLocation();
-            float ConnectionDistance = FVector::Dist(ConnectionPos,PartnerPos);
-            UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: Connection %d Partner %p ConnectionPos=%s Distance = %f"),this,i,Partner,*ConnectionPos.ToString(),ConnectionDistance);
-            if (std::abs(Distance - ConnectionDistance) < UPGRADE_POSITION_REQUIRED_DELTA)
-            {
-                UE_LOG( LogAutoSplitters, Error, TEXT("Splitter %p: Partner %p - %d and %d: distance delta too small (%f)"), this, Partner, MatchingConnection, i, Distance - ConnectionDistance );
-                LoopError = true;
-                continue;
-            }
 
-            if (ConnectionDistance < Distance)
-            {
-                UE_LOG( LogAutoSplitters, Display, TEXT("Splitter %p: Partner %p - picking connection %d"), this, Partner, i );
-                Distance = ConnectionDistance;
-                MatchingConnection = i;
-                LoopError = false;
-            }
+        if (Connection->GetName() == TEXT("Output0") || Connection->GetName() == TEXT("Input0"))
+        {
+            UE_LOG(LogAutoSplitters,Display,TEXT("Detaching component %s and scheduling for destruction"),*Connection->GetName());
+            RemoveOwnedComponent(Connection);
+            OldBluePrintConnections.Emplace(Connection);
         }
 
-        if (LoopError)
+        if (Connection->IsConnected())
         {
-            UE_LOG( LogAutoSplitters, Error, TEXT("Splitter %p: Partner %p - best candidates are too close, marking connection for dismantling"), this, Partner);
-            UnclearPartners.Add(Partner);
-        }
-
-        if (Candidates[MatchingConnection])
-        {
-            UE_LOG( LogAutoSplitters, Error, TEXT("Splitter %p: Partner %p - best connection %d has already been picked for %p"), this, Partner, MatchingConnection, Candidates[MatchingConnection]);
-            UnclearPartners.Add(Partner);
-        }
-        else
-        {
-            Candidates[MatchingConnection] = Partner;
-            ++Assigned;
-        }
-        ++idebug;
-    }
-
-    if (!RemoveAllConveyors)
-    {
-        if (Assigned < PartnerCount)
-        {
-            UE_LOG( LogAutoSplitters, Error, TEXT("Splitter %p - Failed to assign all connections (%d < %d)"), this, Assigned, PartnerCount);
-        }
-        for (int32 i = 0 ; i < 4 ; ++i)
-        {
-            if (!Candidates[i])
-                continue;
-
-            if (Connections[i]->GetDirection() == Candidates[i]->GetDirection())
-            {
-                UE_LOG( LogAutoSplitters, Error, TEXT("Splitter %p - inconsistent connection directions for output %d (%s), marking conveyor for dismantling"), this, i, *Connections[i]->GetName());
-                UnclearPartners.Add(Candidates[i]);
-                Candidates[i] = nullptr;
-            }
-        }
-    }
-for (auto Partner : UnclearPartners)
-    {
-        UE_LOG(LogAutoSplitters,Warning,TEXT("Splitter %p: Scheduling attached conveyor of partner %p for dismantling after BeginPlay() completes"),this,Partner);
-        auto Conveyor = Cast<AFGBuildableConveyorBase>(Partner->GetOuterBuildable());
-        if (!Conveyor)
-        {
-            UE_LOG(LogAutoSplitters,Error,TEXT("Splitter %p: Partner %p - Encountered a connection that is not hooked up to a conveyor, but to %s"),this,Partner,*Partner->GetOuterBuildable()->GetClass()->GetName())
-        }
-        else
-        {
-            Module->mBrokenConveyors.Add(Conveyor);
-        }
-    }
-
-    if (!RemoveAllConveyors)
-    {
-        for (int32 i = 0; i < 4; ++i)
-        {
-            if (Candidates[i] && !UnclearPartners.Contains(Candidates[i]))
-            {
-                Module->mPendingConnectionPairs.Add({Connections[i],Candidates[i]});
-            }
-        }
-    }
-    else
-    {
-        UE_LOG( LogAutoSplitters, Error, TEXT("Splitter %p - Mod is configured to wipe all conveyors"), this);
-        for (auto Partner: Partners)
-        {
-            if (Partner)
-            {
-                UE_LOG(LogAutoSplitters,Warning,TEXT("Splitter %p: Scheduling attached conveyor of partner %p for dismantling after BeginPlay() completes"),this,Partner);
-                auto Conveyor = Cast<AFGBuildableConveyorBase>(Partner->GetOuterBuildable());
-                if (!Conveyor)
-                {
-                    UE_LOG(LogAutoSplitters,Error,TEXT("Splitter %p: Partner %p - Encountered a connection that is not hooked up to a conveyor, but to %s"),this,Partner,*Partner->GetOuterBuildable()->GetClass()->GetName())
-                }
-                else
-                {
-                    Module->mBrokenConveyors.Add(Conveyor);
-                }
-            }
+            UE_LOG(LogAutoSplitters,Display,TEXT("Recording existing connection"));
+            ConveyorConnections.Emplace(Connection->GetConnection());
         }
     }
 
     ClearPersistentFlag(NEEDS_CONNECTIONS_FIXUP);
-    ++Module->mUpgradedSplitters;
-    mNeedsInitialDistributionSetup = true;
+
 }
 
 void AMFGBuildableAutoSplitter::SetupInitialDistributionState()
@@ -1126,6 +1053,8 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
         return {false,-1};
     }
 
+    UE_LOG(LogAutoSplitters,Display,TEXT("Starting BalanceNetwork() algorithm for root splitter %p (%s)"),Root,*Root->GetName());
+
     for (int32 Level = Network.Num() - 1 ; Level >= 0 ; --Level)
     {
         for (auto& Node: Network[Level])
@@ -1144,6 +1073,11 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                         Splitter.mOutputStates[i] = ClearFlag(Splitter.mOutputStates[i],EOutputState::Connected);
                         Node.ConnectionStateChanged = true;
                     }
+                    if (IsSet(Splitter.mOutputStates[i], EOutputState::AutoSplitter))
+                    {
+                        Splitter.mOutputStates[i] = ClearFlag(Splitter.mOutputStates[i],EOutputState::AutoSplitter);
+                        Node.ConnectionStateChanged = true;
+                    }
                     continue;
                 }
 
@@ -1153,9 +1087,13 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                     Node.ConnectionStateChanged = true;
                 }
 
-                Splitter.mOutputStates[i] = SetFlag(Splitter.mOutputStates[i],EOutputState::AutoSplitter,Node.Outputs[i] != nullptr);
                 if (Node.Outputs[i])
                 {
+                    if (!IsSet(Splitter.mOutputStates[i], EOutputState::AutoSplitter))
+                    {
+                        Splitter.mOutputStates[i] = SetFlag(Splitter.mOutputStates[i],EOutputState::AutoSplitter);
+                        Node.ConnectionStateChanged = true;
+                    }
                     auto& OutputNode = *Node.Outputs[i];
                     auto& OutputSplitter = *OutputNode.Splitter;
                     if (OutputSplitter.IsPersistentFlagSet(MANUAL_INPUT_RATE))
@@ -1172,6 +1110,11 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                 }
                 else
                 {
+                    if (IsSet(Splitter.mOutputStates[i], EOutputState::AutoSplitter))
+                    {
+                        Splitter.mOutputStates[i] = ClearFlag(Splitter.mOutputStates[i],EOutputState::AutoSplitter);
+                        Node.ConnectionStateChanged = true;
+                    }
                     if (IsSet(Splitter.mOutputStates[i],EOutputState::Automatic))
                     {
                         Node.Shares += Node.PotentialShares[i];
@@ -1232,14 +1175,14 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                 UE_LOG(
                     LogAutoSplitters,
                     Warning,
-                    TEXT("Could not evenly distribute rate among shares: available=%d shares=%d rate=%d remainder=%d"),
+                    TEXT("Could not evenly distribute rate among shares: available=%d shares=%lld rate=%lld remainder=%lld"),
                     AvailableForShares,
                     Node.Shares,
                     RatePerShare,
                     Remainder
                 );
-                Valid = false;
-                break;
+                // Valid = false;
+                // break;
             }
 
             if (DEBUG_SPLITTER(Splitter))
@@ -1247,13 +1190,17 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                 UE_LOG(
                     LogAutoSplitters,
                     Display,
-                    TEXT("distribution setup: input=%d fixedDemand=%d ratePerShare=%d shares=%d"),
+                    TEXT("distribution setup: input=%d fixedDemand=%d ratePerShare=%lld shares=%lld remainder=%lld"),
                     Node.AllocatedInputRate,
                     Node.FixedDemand,
                     RatePerShare,
-                    Node.Shares
+                    Node.Shares,
+                    Remainder
                     );
             }
+
+            int64 UndistributedShares = 0;
+            int64 UndistributedRate = 0;
 
             for (int32 i = 0; i < NUM_OUTPUTS; ++i)
             {
@@ -1265,18 +1212,37 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                     }
                     else
                     {
-                        auto [ShareBasedRate,OutputRemainder] = std::div(RatePerShare * Node.Outputs[i]->Shares,FRACTIONAL_SHARE_MULTIPLIER);
+                        int64 Rate = RatePerShare * Node.Outputs[i]->Shares;
+                        if (Remainder > 0)
+                        {
+                            auto [ExtraRate,NewUndistributedShares] = std::div(UndistributedShares + RatePerShare * Node.Outputs[i]->Shares,Remainder);
+                            UE_LOG(
+                                LogAutoSplitters,
+                                Display,
+                                TEXT("Output %d: increasing rate from %lld to %lld, newUndistributedShares=%lld"),
+                                i,
+                                Rate,
+                                Rate + ExtraRate,
+                                NewUndistributedShares
+                                );
+                            UndistributedShares = NewUndistributedShares;
+                            Rate += ExtraRate;
+                        }
+
+                        auto [ShareBasedRate,OutputRemainder] = std::div(Rate,FRACTIONAL_SHARE_MULTIPLIER);
                         if (OutputRemainder != 0)
                         {
                             UE_LOG(
                                 LogAutoSplitters,
                                 Warning,
-                                TEXT("Could not calculate fixed precision output rate for output %d (autosplitter): RatePerShare=%d Shares=%d rate=%d remainder=%d"),
+                                TEXT("Could not calculate fixed precision output rate for output %d (autosplitter): RatePerShare=%lld Shares=%lld rate=%lld remainder=%lld"),
+                                i,
                                 RatePerShare,
                                 Node.Outputs[i]->Shares,
                                 ShareBasedRate,
                                 OutputRemainder
                             );
+                            UndistributedRate += OutputRemainder;
                         }
                         Node.AllocatedOutputRates[i] = Node.Outputs[i]->FixedDemand + ShareBasedRate;
                     }
@@ -1288,21 +1254,39 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                     {
                         if (IsSet(Splitter.mOutputStates[i], EOutputState::Automatic))
                         {
-                            auto [Rate,OutputRemainder] = std::div(RatePerShare * Node.PotentialShares[i],FRACTIONAL_SHARE_MULTIPLIER);
+                            int64 Rate = RatePerShare * Node.PotentialShares[i];
+                            if (Remainder > 0)
+                            {
+                                auto [ExtraRate,NewUndistributedShares] = std::div(UndistributedShares + RatePerShare * Node.PotentialShares[i],Remainder);
+                                UE_LOG(
+                                    LogAutoSplitters,
+                                    Display,
+                                    TEXT("Output %d: increasing rate from %lld to %lld, newUndistributedShares=%lld"),
+                                    i,
+                                    Rate,
+                                    Rate + ExtraRate,
+                                    NewUndistributedShares
+                                    );
+                                UndistributedShares = NewUndistributedShares;
+                                Rate += ExtraRate;
+                            }
+
+                            auto [ShareBasedRate,OutputRemainder] = std::div(Rate,FRACTIONAL_SHARE_MULTIPLIER);
                             if (OutputRemainder != 0)
                             {
                                 UE_LOG(
                                     LogAutoSplitters,
                                     Warning,
-                                    TEXT("Could not calculate fixed precision output rate for output %d: RatePerShare=%d PotentialShares=%d rate=%d remainder=%d"),
+                                    TEXT("Could not calculate fixed precision output rate for output %d: RatePerShare=%lld PotentialShares=%lld rate=%lld remainder=%lld"),
+                                    i,
                                     RatePerShare,
                                     Node.PotentialShares[i],
-                                    Rate,
+                                    ShareBasedRate,
                                     OutputRemainder
                                 );
-                                Valid = false;
+                                UndistributedRate += OutputRemainder;
                             }
-                            Node.AllocatedOutputRates[i] = Rate;
+                            Node.AllocatedOutputRates[i] = ShareBasedRate;
                         }
                         else
                         {
@@ -1311,7 +1295,13 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                     }
                 }
             }
-            if (DEBUG_SPLITTER(Splitter))
+
+            if (UndistributedRate > 0)
+            {
+                UE_LOG(LogAutoSplitters, Warning, TEXT("%lld units of unallocated distribution rate"),UndistributedRate);
+            }
+
+            if (true)
             {
                 UE_LOG(
                     LogAutoSplitters,
@@ -1360,7 +1350,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
 
             if (NeedsSetupDistribution)
             {
-                Splitter.SetupDistribution();
+                Splitter.SetPersistentFlag(NEEDS_DISTRIBUTION_SETUP);
             }
         }
     }

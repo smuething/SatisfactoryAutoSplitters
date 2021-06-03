@@ -1,8 +1,22 @@
 # Changelog
 
+## 0.3.7
+
+### Changes
+
+- Re-enable hook that keeps Satisfactory from crashing when upgrading splitters to auto splitters
+- Completely rework savegame upgrade from 0.2.0 and older: Just dismantle old autosplitters and re-build them from scratch with
+  the hologram.
+- Fix a crash when attaching conveyors to an autosplitter that had all belts removed. Someday I'll remember the order of arguments
+  in TArray::Init()...
+- Salvage cases where the fixed precision arithmetic cannot perfectly assign output rates by distributing the remainder
+  proportionally. Shouldn't be a big deal in terms of fairness, but might lead to fairly long cycle times.
+- Reduce the risk of multiple threads stepping on each other's toes when the factory tick and grab output run simultaneously. I don't
+  know whether that can actually happen, but let's build in some basic safeguards. I'd really like to avoid a full-blown lock on each
+  splitter, though.
 ## 0.3.5
 
-#### Change
+### Changes
 
 - Make upgrade process more robust by comparing world coordinates when matching components.
 - Delay all modifying operations until all `BeginPlay()` calls during the initial savegame initialization have

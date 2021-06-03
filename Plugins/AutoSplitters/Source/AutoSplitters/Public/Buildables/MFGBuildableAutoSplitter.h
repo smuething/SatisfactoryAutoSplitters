@@ -19,7 +19,7 @@ enum class EOutputState : uint8
 {
     Automatic UMETA(DisplayName = "Automatic"),
     Connected UMETA(DisplayName = "Connected"),
-    AutoSplitter UMETA(DisplayName = "AutoSplitter")
+    AutoSplitter UMETA(DisplayName = "AutoSplitter"),
 };
 
 constexpr int32 Flag(EOutputState flag)
@@ -69,6 +69,7 @@ class AUTOSPLITTERS_API AMFGBuildableAutoSplitter : public AFGBuildableAttachmen
 
     static constexpr uint32 MANUAL_INPUT_RATE         = 1 <<  8;
     static constexpr uint32 NEEDS_CONNECTIONS_FIXUP   = 1 <<  9;
+    static constexpr uint32 NEEDS_DISTRIBUTION_SETUP  = 1 << 10;
 
     static constexpr uint32 IS_REPLICATION_ENABLED    = 1 <<  8;
 
