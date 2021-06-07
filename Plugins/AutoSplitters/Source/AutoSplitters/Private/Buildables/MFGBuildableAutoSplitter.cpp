@@ -4,14 +4,12 @@
 
 #include <numeric>
 
-#include <Modules/ModuleManager.h>
 #include "AutoSplittersLog.h"
 #include "AutoSplittersModule.h"
 #include "FGFactoryConnectionComponent.h"
 #include "Buildables/FGBuildableConveyorBase.h"
-#include "AutoSplitters_ConfigStruct.h"
-#include "Chaos/AABB.h"
-#include "Chaos/AABB.h"
+#include "Subsystem/AutoSplittersSubsystem.h"
+#include "Replication/MFGReplicationDetailActor_BuildableAutoSplitter.h"
 
 #if AUTO_SPLITTERS_DEBUG
 #define DEBUG_THIS_SPLITTER mDebug
@@ -40,7 +38,7 @@ constexpr auto MakeTArray(const T& Value) -> TArray<T,TFixedAllocator<n>>
 
 AMFGBuildableAutoSplitter::AMFGBuildableAutoSplitter()
     : mTransientState(0)
-    , mOutputStates(MakeTArray<NUM_OUTPUTS>(Flag(EOutputState::Automatic)))
+    , mOutputStates(MakeTArray<NUM_OUTPUTS>(ToBitfieldFlag(EOutputState::Automatic)))
     , mRemainingItems(MakeTArray<NUM_OUTPUTS>(0))
     , mPersistentState(0) // Do the setup in BeginPlay(), otherwise we cannot detect version changes during loading
     , mTargetInputRate(0)
@@ -65,6 +63,7 @@ AMFGBuildableAutoSplitter::AMFGBuildableAutoSplitter()
 void AMFGBuildableAutoSplitter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
+    /*
     DOREPLIFETIME(AMFGBuildableAutoSplitter,mTransientState);
     DOREPLIFETIME(AMFGBuildableAutoSplitter,mOutputStates);
     DOREPLIFETIME(AMFGBuildableAutoSplitter,mPersistentState);
@@ -74,11 +73,13 @@ void AMFGBuildableAutoSplitter::GetLifetimeReplicatedProps(TArray<FLifetimePrope
     DOREPLIFETIME(AMFGBuildableAutoSplitter,mCycleLength);
     DOREPLIFETIME(AMFGBuildableAutoSplitter,mCachedInventoryItemCount);
     DOREPLIFETIME(AMFGBuildableAutoSplitter,mItemRate);
+    */
 }
 
 void AMFGBuildableAutoSplitter::PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker)
 {
     Super::PreReplication(ChangedPropertyTracker);
+    /*
     DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mOutputStates,IsTransientFlagSet(IS_REPLICATION_ENABLED));
     DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mPersistentState,IsTransientFlagSet(IS_REPLICATION_ENABLED));
     DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mTargetInputRate,IsTransientFlagSet(IS_REPLICATION_ENABLED));
@@ -87,6 +88,7 @@ void AMFGBuildableAutoSplitter::PreReplication(IRepChangedPropertyTracker& Chang
     DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mCycleLength,IsTransientFlagSet(IS_REPLICATION_ENABLED));
     DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mCachedInventoryItemCount,IsTransientFlagSet(IS_REPLICATION_ENABLED));
     DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mItemRate,IsTransientFlagSet(IS_REPLICATION_ENABLED));
+    */
 }
 
 void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
@@ -142,10 +144,6 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
     if (mTargetInputRate == 0 && mInputs[0]->IsConnected())
     {
         auto [_,Rate,Ready] = FindAutoSplitterAndMaxBeltRate(mInputs[0],false);
-#if AUTO_SPLITTERS_DELAY_UNTIL_READY
-        if (!Ready)
-            return;
-#endif
         mTargetInputRate = Rate;
     }
 
@@ -172,7 +170,7 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
         return;
     }
 
-    if (IsPersistentFlagSet(NEEDS_DISTRIBUTION_SETUP))
+    if (IsSplitterFlagSet(EPersistent::NeedsDistributionSetup))
     {
         SetupDistribution();
     }
@@ -314,22 +312,17 @@ void AMFGBuildableAutoSplitter::PostLoadGame_Implementation(int32 saveVersion, i
         UE_LOG(LogAutoSplitters,Fatal,TEXT("PostLoadGame_Implementation() was called without authority"));
     }
 
-    mLeftInCycle = std::accumulate(mRemainingItems.begin(),mRemainingItems.end(),0);
-    mCycleLength = std::accumulate(mItemsPerCycle.begin(),mItemsPerCycle.end(),0);
-    mCycleTime = -100000.0; // this delays item rate calculation to the first full cycle when loading the game
+    TInlineComponentArray<UFGFactoryConnectionComponent*,6> Connections;
+    GetComponents(Connections);
 
-    if (GetSplitterVersion() == 0)
+    if (Connections.Num() > 4)
     {
-        UE_LOG(LogAutoSplitters,Display,TEXT("Upgrading saved Auto Splitter from version 0 to 1"));
+        UE_LOG(LogAutoSplitters,Display,TEXT("%s: ancient splitter created with 0.2.0 or older"),*GetName());
 
 #if AUTO_SPLITTERS_DEBUG
 
-        TInlineComponentArray<UFGFactoryConnectionComponent*,6> Connections;
-
-        GetComponents(Connections);
-
-        UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: connections=%d outputrates_deprecated=%d outputstates=(%d %d %d)"),
-            this,
+        UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %s: connections=%d outputrates_deprecated=%d outputstates=(%d %d %d)"),
+            *GetName(),
             Connections.Num(),
             mOutputRates_DEPRECATED.Num(),
             mOutputStates[0],mOutputStates[1],mOutputStates[2]
@@ -337,38 +330,65 @@ void AMFGBuildableAutoSplitter::PostLoadGame_Implementation(int32 saveVersion, i
 
 #endif
 
-        for (int32 i = 0 ; i < NUM_OUTPUTS ; ++i)
-        {
-            mIntegralOutputRates[i] = FRACTIONAL_RATE_MULTIPLIER;
-            mOutputStates[i] = Flag(EOutputState::Automatic);
-            mRemainingItems[i] = 0;
-            mItemsPerCycle[i] = 0;
-        }
-        mLeftInCycle = 0;
-        mCycleLength = 0;
-
         mOutputRates_DEPRECATED.Empty();
 
-        SetPersistentFlag(NEEDS_CONNECTIONS_FIXUP);
-        SetSplitterVersion(1);
+        SetSplitterFlag(EPersistent::NeedsConnectionsFixup);
     }
 
-    if (!IsPersistentFlagSet(NEEDS_CONNECTIONS_FIXUP))
-    {
-        SetupDistribution(true);
-        mNeedsInitialDistributionSetup = false;
-    }
+    SetSplitterFlag(ETransient::NeedsLoadedSplitterProcessing);
+
+    FAutoSplittersModule::Get()->OnSplitterLoadedFromSaveGame(this);
+}
+
+UClass* AMFGBuildableAutoSplitter::GetReplicationDetailActorClass() const
+{
+    return Super::GetReplicationDetailActorClass();
+    // return AMFGReplicationDetailActor_BuildableAutoSplitter::StaticClass();
 }
 
 void AMFGBuildableAutoSplitter::BeginPlay()
 {
-
     // we need to fix the connection wiring before calling into our parent class
     if (HasAuthority())
     {
-        if (IsPersistentFlagSet(NEEDS_CONNECTIONS_FIXUP))
+        if (IsSplitterFlagSet(ETransient::NeedsLoadedSplitterProcessing))
         {
-            FixupConnections();
+
+            // special case for really old and broken splitters created with 0.2.0 and older
+            if (IsSplitterFlagSet(EPersistent::NeedsConnectionsFixup))
+            {
+                FixupConnections();
+                Super::BeginPlay();
+                return;
+            }
+
+            const auto AutoSplittersSubsystem = AAutoSplittersSubsystem::Get(this);
+
+            switch (AutoSplittersSubsystem->GetSerializationVersion())
+            {
+            case EAutoSplittersSerializationVersion::Legacy:
+                {
+                    break;
+                }
+            case EAutoSplittersSerializationVersion::FixedPrecisionArithmetic:
+                {
+                    break;
+                }
+            default:
+                {
+                    UE_LOG(LogAutoSplitters,Error,TEXT("AutoSplitter %s was saved with an unsupported serialization version, will be removed"),*GetName());
+                    FAutoSplittersModule::Get()->ScheduleDismantle(this);
+                }
+            }
+
+            mLeftInCycle = std::accumulate(mRemainingItems.begin(),mRemainingItems.end(),0);
+            mCycleLength = std::accumulate(mItemsPerCycle.begin(),mItemsPerCycle.end(),0);
+            mCycleTime = -100000.0; // this delays item rate calculation to the first full cycle when loading the game
+
+            SetupDistribution(true);
+            mNeedsInitialDistributionSetup = false;
+            ClearSplitterFlag(ETransient::NeedsLoadedSplitterProcessing);
+
         }
 
         Super::BeginPlay();
@@ -562,7 +582,7 @@ void AMFGBuildableAutoSplitter::SetupDistribution(bool LoadingSave)
         PrepareCycle(false);
     }
 
-    ClearPersistentFlag(NEEDS_DISTRIBUTION_SETUP);
+    ClearSplitterFlag(EPersistent::NeedsDistributionSetup);
 }
 
 void AMFGBuildableAutoSplitter::PrepareCycle(const bool AllowCycleExtension, const bool Reset)
@@ -657,20 +677,20 @@ void AMFGBuildableAutoSplitter::Server_EnableReplication(float Duration)
 
     UE_LOG(LogAutoSplitters,Display,TEXT("Enabling full data replication for Auto Splitter %p"),this);
 
-    SetTransientFlag(IS_REPLICATION_ENABLED);
+    SetSplitterFlag(ETransient::IsReplicationEnabled);
     GetWorldTimerManager().SetTimer(mReplicationTimer,this,&AMFGBuildableAutoSplitter::Server_ReplicationEnabledTimeout,Duration,false);
 }
 
 bool AMFGBuildableAutoSplitter::Server_SetTargetRateAutomatic(bool Automatic)
 {
-    if (Automatic == !IsPersistentFlagSet(MANUAL_INPUT_RATE))
+    if (Automatic == !IsSplitterFlagSet(EPersistent::ManualInputRate))
         return true;
 
-    SetPersistentFlag(MANUAL_INPUT_RATE,!Automatic);
+    SetSplitterFlag(EPersistent::ManualInputRate,!Automatic);
     auto [valid, _] = Server_BalanceNetwork(this);
     if (!valid)
     {
-        SetPersistentFlag(MANUAL_INPUT_RATE,Automatic);
+        SetSplitterFlag(EPersistent::ManualInputRate,Automatic);
         return false;
     }
     return true;
@@ -757,9 +777,9 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputRate(const int32 Output, const f
     int32 OldTargetInputRate = 0;
     if (DownstreamAutoSplitter)
     {
-        OldManualInputRate = DownstreamAutoSplitter->IsPersistentFlagSet(MANUAL_INPUT_RATE);
+        OldManualInputRate = DownstreamAutoSplitter->IsSplitterFlagSet(EPersistent::ManualInputRate);
         OldTargetInputRate = DownstreamAutoSplitter->mTargetInputRate;
-        DownstreamAutoSplitter->SetPersistentFlag(MANUAL_INPUT_RATE);
+        DownstreamAutoSplitter->SetSplitterFlag(EPersistent::ManualInputRate);
         DownstreamAutoSplitter->mTargetInputRate = IntRate;
     }
 
@@ -770,7 +790,7 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputRate(const int32 Output, const f
         mIntegralOutputRates[Output] = OldRate;
         if (DownstreamAutoSplitter)
         {
-            DownstreamAutoSplitter->SetPersistentFlag(MANUAL_INPUT_RATE,OldManualInputRate);
+            DownstreamAutoSplitter->SetSplitterFlag(EPersistent::ManualInputRate,OldManualInputRate);
             DownstreamAutoSplitter->mTargetInputRate = OldTargetInputRate;
         }
     }
@@ -790,7 +810,7 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputAutomatic(int32 Output, bool Aut
     auto [DownstreamAutoSplitter,_,Ready] = FindAutoSplitterAndMaxBeltRate(mOutputs[Output],true);
     if (DownstreamAutoSplitter)
     {
-        DownstreamAutoSplitter->SetPersistentFlag(MANUAL_INPUT_RATE,!Automatic);
+        DownstreamAutoSplitter->SetSplitterFlag(EPersistent::ManualInputRate,!Automatic);
     }
     else
     {
@@ -803,7 +823,7 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputAutomatic(int32 Output, bool Aut
         mOutputStates[Output] = SetFlag(mOutputStates[Output], EOutputState::Automatic,!Automatic);
         if (DownstreamAutoSplitter)
         {
-            DownstreamAutoSplitter->SetPersistentFlag(MANUAL_INPUT_RATE,Automatic);
+            DownstreamAutoSplitter->SetSplitterFlag(EPersistent::ManualInputRate,Automatic);
         }
         UE_LOG(
             LogAutoSplitters,
@@ -833,7 +853,7 @@ void AMFGBuildableAutoSplitter::Server_ReplicationEnabledTimeout()
         UE_LOG(LogAutoSplitters,Fatal,TEXT("AMFGBuildableAutoSplitter::Server_ReplicationEnabledTimeout() may only be called on server"));
     }
     UE_LOG(LogAutoSplitters,Display,TEXT("Disabling full data replication for Auto Splitter %p"),this);
-    ClearTransientFlag(IS_REPLICATION_ENABLED);
+    ClearSplitterFlag(ETransient::IsReplicationEnabled);
 }
 
 
@@ -845,7 +865,7 @@ void AMFGBuildableAutoSplitter::FixupConnections()
     TInlineComponentArray<UFGFactoryConnectionComponent*, 6> Connections;
     GetComponents(Connections);
 
-    UE_LOG(LogAutoSplitters, Display, TEXT("Fixing up Auto Splitter connections for 0.3.0 upgrade"));
+    UE_LOG(LogAutoSplitters, Display, TEXT("%s: Clearing out connection components for pre 0.3.0 splitter to avoid crashing"),*GetName());
 
 #if AUTO_SPLITTERS_DEBUG
 
@@ -925,7 +945,7 @@ void AMFGBuildableAutoSplitter::FixupConnections()
 
 #endif
 
-    auto& [This,OldBluePrintConnections,ConveyorConnections] = Module->mPreUpgradeSplitters.Add_GetRef({this,{},{}});
+    auto& [This,OldBluePrintConnections,ConveyorConnections] = Module->mPreComponentFixSplitters.Add_GetRef({this,{},{}});
 
     for (auto Connection : Connections)
     {
@@ -944,35 +964,17 @@ void AMFGBuildableAutoSplitter::FixupConnections()
         }
     }
 
-    ClearPersistentFlag(NEEDS_CONNECTIONS_FIXUP);
+    ClearSplitterFlag(EPersistent::NeedsConnectionsFixup);
 
 }
 
 void AMFGBuildableAutoSplitter::SetupInitialDistributionState()
 {
     auto [InputSplitter,MaxInputRate,Ready] = FindAutoSplitterAndMaxBeltRate(mInputs[0], false);
-#if AUTO_SPLITTERS_DELAY_UNTIL_READY
-    if (!Ready)
-    {
-#if AUTO_SPLITTERS_DEBUG
-        UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: Aborting because not ready"),this);
-#endif
-        return;
-    }
-#endif
     mTargetInputRate = MaxInputRate;
     for (int32 i = 0; i < NUM_OUTPUTS; ++i)
     {
         auto [OutputSplitter,MaxRate,Ready2] = FindAutoSplitterAndMaxBeltRate(mOutputs[i], true);
-#if AUTO_SPLITTERS_DELAY_UNTIL_READY
-        if (!Ready2)
-        {
-#if AUTO_SPLITTERS_DEBUG
-            UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: Aborting because not ready"),this);
-#endif
-            return;
-        }
-#endif
         if (MaxRate > 0)
         {
             mIntegralOutputRates[i] = FRACTIONAL_RATE_MULTIPLIER;
@@ -1001,7 +1003,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
         return {false,-1};
     }
 
-    if(ForSplitter->IsPersistentFlagSet(NEEDS_CONNECTIONS_FIXUP) || !ForSplitter->HasActorBegunPlay())
+    if(ForSplitter->IsSplitterFlagSet(EPersistent::NeedsConnectionsFixup) || !ForSplitter->HasActorBegunPlay())
     {
         return {false,-1};
     }
@@ -1016,16 +1018,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
         std::tie(Current,Rate,Ready) = FindAutoSplitterAndMaxBeltRate(Current->mInputs[0],false)
         )
     {
-#if AUTO_SPLITTERS_DELAY_UNTIL_READY
-        if (!Ready)
-        {
-#if AUTO_SPLITTERS_DEBUG
-            UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: Aborting because not ready"),Current);
-#endif
-            return {false,-1};
-        }
-#endif
-        if (Current->IsPersistentFlagSet(NEEDS_CONNECTIONS_FIXUP) || !Current->HasActorBegunPlay())
+        if (Current->IsSplitterFlagSet(EPersistent::NeedsConnectionsFixup) || !Current->HasActorBegunPlay())
             return {false,-1};
         if (SplitterSet.Contains(Current))
         {
@@ -1042,7 +1035,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
         return {false,-1};
     }
 
-    const auto Config = FAutoSplitters_ConfigStruct::GetActiveConfig();
+    const auto& Config = AAutoSplittersSubsystem::Get(ForSplitter)->GetConfig();
 
     // Now walk the tree to discover the whole network
     TArray<TArray<FNetworkNode>> Network;
@@ -1096,7 +1089,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                     }
                     auto& OutputNode = *Node.Outputs[i];
                     auto& OutputSplitter = *OutputNode.Splitter;
-                    if (OutputSplitter.IsPersistentFlagSet(MANUAL_INPUT_RATE))
+                    if (OutputSplitter.IsSplitterFlagSet(EPersistent::ManualInputRate))
                     {
                         Splitter.mOutputStates[i] = ClearFlag(Splitter.mOutputStates[i],EOutputState::Automatic);
                         Node.FixedDemand += OutputSplitter.mTargetInputRate;
@@ -1206,7 +1199,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
             {
                 if (Node.Outputs[i])
                 {
-                    if (Node.Outputs[i]->Splitter->IsPersistentFlagSet(MANUAL_INPUT_RATE))
+                    if (Node.Outputs[i]->Splitter->IsSplitterFlagSet(EPersistent::ManualInputRate))
                     {
                         Node.AllocatedOutputRates[i] = Node.Outputs[i]->Splitter->mTargetInputRate;
                     }
@@ -1350,7 +1343,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
 
             if (NeedsSetupDistribution)
             {
-                Splitter.SetPersistentFlag(NEEDS_DISTRIBUTION_SETUP);
+                Splitter.SetSplitterFlag(EPersistent::NeedsDistributionSetup);
             }
         }
     }
@@ -1365,19 +1358,6 @@ std::tuple<AMFGBuildableAutoSplitter*, int32, bool> AMFGBuildableAutoSplitter::F
     while (Connection->IsConnected())
     {
         Connection = Connection->GetConnection();
-#if AUTO_SPLITTERS_DELAY_UNTIL_READY
-        if (!Connection->GetOuterBuildable()->HasActorBegunPlay())
-        {
-#if AUTO_SPLITTERS_DEBUG
-            UE_LOG(LogAutoSplitters,Display,TEXT("Encountered not-ready actor %p of type %s"),
-                Connection->GetOuterBuildable(),
-                *Connection->GetOuterBuildable()->StaticClass()->GetName()
-                );
-#endif
-
-            return {0,0,false};
-        }
-#endif
         const auto Belt = Cast<AFGBuildableConveyorBase>(Connection->GetOuterBuildable());
         if (Belt)
         {
@@ -1397,19 +1377,6 @@ std::tuple<AFGBuildableFactory*, int32, bool> AMFGBuildableAutoSplitter::FindFac
     while (Connection->IsConnected())
     {
         Connection = Connection->GetConnection();
-#if AUTO_SPLITTERS_DELAY_UNTIL_READY
-        if (!Connection->GetOuterBuildable()->HasActorBegunPlay())
-        {
-#if AUTO_SPLITTERS_DEBUG
-            UE_LOG(LogAutoSplitters,Display,TEXT("Encountered not-ready actor %p of type %s"),
-                Connection->GetOuterBuildable(),
-                *Connection->GetOuterBuildable()->StaticClass()->GetName()
-                );
-#endif
-
-            return {0,0,false};
-        }
-#endif
         const auto Belt = Cast<AFGBuildableConveyorBase>(Connection->GetOuterBuildable());
         if (Belt)
         {
@@ -1448,29 +1415,11 @@ bool AMFGBuildableAutoSplitter::DiscoverHierarchy(
     else
     {
         auto [_,MaxRate,Ready] = FindAutoSplitterAndMaxBeltRate(Splitter->mInputs[0],false);
-#if AUTO_SPLITTERS_DELAY_UNTIL_READY
-        if (!Ready)
-        {
-#if AUTO_SPLITTERS_DEBUG
-            UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: Aborting because not ready"),Splitter);
-#endif
-            return false;
-        }
-#endif
         Node.MaxInputRate = MaxRate;
     }
     for (int32 i = 0 ; i < NUM_OUTPUTS ; ++i)
     {
         const auto [Downstream,MaxRate,Ready] = FindFactoryAndMaxBeltRate(Splitter->mOutputs[i], true);
-#if AUTO_SPLITTERS_DELAY_UNTIL_READY
-        if (!Ready)
-        {
-#if AUTO_SPLITTERS_DEBUG
-            UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: Aborting because not ready"),Splitter);
-#endif
-            return false;
-        }
-#endif
         Node.MaxOutputRates[i] = MaxRate;
         if (Downstream)
         {

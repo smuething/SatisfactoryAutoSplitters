@@ -2,14 +2,16 @@
 
 // define to 1 to get more debug output to console when the debug flag is set in the splitter UI
 #define AUTO_SPLITTERS_DEBUG 1
-#define AUTO_SPLITTERS_DELAY_UNTIL_READY 0
 
 #include <FGFactoryConnectionComponent.h>
+
 #include "Buildables/MFGBuildableAutoSplitter.h"
+#include "Modules/ModuleManager.h"
 
 class FAutoSplittersModule : public IModuleInterface
 {
 	friend class AMFGBuildableAutoSplitter;
+	friend class AAutoSplittersSubsystem;
 
 	TArray<
 		std::tuple<
@@ -17,8 +19,29 @@ class FAutoSplittersModule : public IModuleInterface
 			TInlineComponentArray<UFGFactoryConnectionComponent*, 2>,
 			TInlineComponentArray<UFGFactoryConnectionComponent*, 4>
 		>
-	> mPreUpgradeSplitters;
+	> mPreComponentFixSplitters;
+
+	int32 mLoadedSplitterCount;
+
+	TArray<AMFGBuildableAutoSplitter*> mDoomedSplitters;
+
+	void OnSplitterLoadedFromSaveGame(AMFGBuildableAutoSplitter* Splitter);
+	void ScheduleDismantle(AMFGBuildableAutoSplitter* Splitter);
+
+	bool HaveLoadedSplitters() const
+	{
+		return mLoadedSplitterCount > 0;
+	}
+
+	void ReplacePreComponentFixSplitters(UWorld* World, AAutoSplittersSubsystem* AutoSplittersSubsystem);
 
 public:
 	virtual void StartupModule() override;
+
+	static const FName ModReference;
+
+	static FAutoSplittersModule* Get()
+	{
+		return FModuleManager::GetModulePtr<FAutoSplittersModule>(ModReference);
+	}
 };

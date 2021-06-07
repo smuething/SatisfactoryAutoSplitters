@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.9
+
+### Changes
+- Rename game instance and game world module and add C++ base class for game world module.
+- Add subsystem that gets stored in the savegame and allows for carrying global state across saves.
+- Use subsystem to add proper version tracking of both the mod version and the serialization version
+  that defines the layout of the properties stored in the save.
+- Make upgrade process much more robust using those features and clean up a lot of the mess added when
+  trying to debug the 0.2.0 -> 0.3.x crashes.
+- Add horrible workaround for making the close button on the widget work. We have to derive from the
+  original dark window widget, which somehow breaks data bindings, so now we have to manually update all state every frame. :\
+- Lots of small cleanups and fixes.
+
+## 0.3.8
+
+### Changes
+
+- Preload mod configuration during initialization to avoid spurious crashes due to a race condition in the configuration loader of SML.
+
 ## 0.3.7
 
 ### Changes

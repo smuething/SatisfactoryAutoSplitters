@@ -4,13 +4,14 @@
 
 #include <array>
 
+#include "FGPlayerController.h"
 #include "FGFactoryConnectionComponent.h"
 #include "Buildables/FGBuildableAttachmentSplitter.h"
 #include "Buildables/FGBuildableConveyorBase.h"
 
 #include "AutoSplittersModule.h"
 #include "AutoSplittersRCO.h"
-#include "FGPlayerController.h"
+#include "util/BitField.h"
 
 #include "MFGBuildableAutoSplitter.generated.h"
 
@@ -22,38 +23,39 @@ enum class EOutputState : uint8
     AutoSplitter UMETA(DisplayName = "AutoSplitter"),
 };
 
-constexpr int32 Flag(EOutputState flag)
-{
-    return 1 << static_cast<int32>(flag);
-}
+template <>
+struct is_enum_bitfield<EOutputState> : std::true_type {};
 
-constexpr bool IsSet(int32 BitField, EOutputState flag)
-{
-    return BitField & Flag(flag);
-}
 
-constexpr int32 SetFlag(int32 BitField, EOutputState flag)
+enum class EAutoSplitterPersistentFlags : uint32
 {
-    return BitField | Flag(flag);
-}
+    // first eight bits reserved for version
+    ManualInputRate        =  8,
+    NeedsConnectionsFixup  =  9,
+    NeedsDistributionSetup = 10,
+};
 
-constexpr int32 ClearFlag(int32 BitField, EOutputState flag)
-{
-    return BitField & ~Flag(flag);
-}
+template<>
+struct is_enum_bitfield<EAutoSplitterPersistentFlags> : std::true_type{};
 
-constexpr int32 SetFlag(int32 BitField, EOutputState flag, bool Enabled)
+enum class EAutoSplitterTransientFlags : uint32
 {
-    return (BitField & ~Flag(flag)) | (Enabled * Flag(flag));
-}
+    // first eight bits reserved for error code
 
-constexpr static int32 Pow_Constexpr(int32 Base, int32 Exponent)
-{
-    int32 Result = 1;
-    while (Exponent-- > 0)
-        Result *= Base;
-    return Result;
-}
+    // replication is currently turned on
+    IsReplicationEnabled          =  8,
+
+    // splitter was loaded from save game and needs to be processed accordingly in BeginPlay()
+    NeedsLoadedSplitterProcessing =  9,
+
+    // splitter was deemed incompatible after load process, remove in Invoke_BeginPlay() hook
+    DismantleAfterLoading         = 10,
+
+};
+
+template<>
+struct is_enum_bitfield<EAutoSplitterTransientFlags> : std::true_type{};
+
 
 /**
  *
@@ -66,12 +68,13 @@ class AUTOSPLITTERS_API AMFGBuildableAutoSplitter : public AFGBuildableAttachmen
     friend class FAutoSplittersModule;
     friend class AMFGAutoSplitterHologram;
     friend class UAutoSplittersRCO;
+    friend class AMFGReplicationDetailActor_BuildableAutoSplitter;
 
-    static constexpr uint32 MANUAL_INPUT_RATE         = 1 <<  8;
-    static constexpr uint32 NEEDS_CONNECTIONS_FIXUP   = 1 <<  9;
-    static constexpr uint32 NEEDS_DISTRIBUTION_SETUP  = 1 << 10;
+public:
 
-    static constexpr uint32 IS_REPLICATION_ENABLED    = 1 <<  8;
+    // shorter names to avoid crazy amounts of typing
+    using EPersistent = EAutoSplitterPersistentFlags;
+    using ETransient  = EAutoSplitterTransientFlags;
 
     static constexpr uint32 VERSION = 1;
 
@@ -99,6 +102,8 @@ public:
     virtual void BeginPlay() override;
     virtual void PostLoadGame_Implementation(int32 saveVersion, int32 gameVersion) override;
 
+    virtual UClass* GetReplicationDetailActorClass() const override;
+
 protected:
 
     virtual void Factory_Tick(float dt) override;
@@ -107,8 +112,7 @@ protected:
 
     UAutoSplittersRCO* RCO() const
     {
-        UWorld* World = GetWorld();
-        return Cast<UAutoSplittersRCO>(Cast<AFGPlayerController>(World->GetFirstPlayerController())->GetRemoteCallObjectOfClass(UAutoSplittersRCO::StaticClass()));
+        return UAutoSplittersRCO::Get(GetWorld());
     }
 
     void Server_EnableReplication(float Duration);
@@ -135,25 +139,25 @@ private:
 
 protected:
 
-    UPROPERTY(Transient, Replicated)
+    UPROPERTY(Transient)
     uint32 mTransientState;
 
     UPROPERTY(SaveGame, Meta = (DeprecatedProperty,NoAutoJson))
     TArray<float> mOutputRates_DEPRECATED;
 
-    UPROPERTY(SaveGame, Replicated, BlueprintReadOnly, Meta = (NoAutoJson))
+    UPROPERTY(SaveGame, BlueprintReadOnly, Meta = (NoAutoJson))
     TArray<int32> mOutputStates;
 
     UPROPERTY(SaveGame, BlueprintReadOnly, Meta = (NoAutoJson))
     TArray<int32> mRemainingItems;
 
-    UPROPERTY(SaveGame, Replicated, Meta = (NoAutoJson))
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
     uint32 mPersistentState;
 
-    UPROPERTY(SaveGame, Replicated, Meta = (NoAutoJson))
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
     int32 mTargetInputRate;
 
-    UPROPERTY(SaveGame, Replicated, Meta = (NoAutoJson))
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
     TArray<int32> mIntegralOutputRates;
 
     UPROPERTY(Transient, BlueprintReadOnly)
@@ -162,19 +166,19 @@ protected:
     UPROPERTY(Transient, BlueprintReadOnly)
     TArray<int32> mItemsPerCycle;
 
-    UPROPERTY(Transient, Replicated, BlueprintReadOnly)
+    UPROPERTY(Transient, BlueprintReadOnly)
     int32 mLeftInCycle;
 
     UPROPERTY(Transient, BlueprintReadWrite)
     bool mDebug;
 
-    UPROPERTY(Transient, Replicated, BlueprintReadOnly)
+    UPROPERTY(Transient, BlueprintReadOnly)
     int32 mCycleLength;
 
-    UPROPERTY(Transient, Replicated, BlueprintReadOnly)
+    UPROPERTY(Transient, BlueprintReadOnly)
     int32 mCachedInventoryItemCount;
 
-    UPROPERTY(Transient, Replicated, BlueprintReadOnly)
+    UPROPERTY(Transient, BlueprintReadOnly)
     float mItemRate;
 
 private:
@@ -205,7 +209,7 @@ public:
     UFUNCTION(BlueprintPure)
     bool IsReplicationEnabled() const
     {
-        return IsTransientFlagSet(IS_REPLICATION_ENABLED);
+        return IsSplitterFlagSet(ETransient::IsReplicationEnabled);
     }
 
     UFUNCTION(BlueprintCallable)
@@ -220,7 +224,7 @@ public:
     UFUNCTION(BlueprintCallable,BlueprintPure)
     bool IsTargetRateAutomatic() const
     {
-        return !IsPersistentFlagSet(MANUAL_INPUT_RATE);
+        return !IsSplitterFlagSet(EPersistent::ManualInputRate);
     }
 
     UFUNCTION(BlueprintCallable)
@@ -377,44 +381,54 @@ private:
 
     void SetSplitterVersion(uint32 Version);
 
-    bool IsPersistentFlagSet(uint32 Flag) const
+    FORCEINLINE bool IsSplitterFlagSet(EPersistent Flag) const
     {
-        return !!(mPersistentState & Flag);
+        return IsSet(mPersistentState,Flag);
     }
 
-    FORCEINLINE void SetPersistentFlag(int32 Flag, bool Value = true)
+    FORCEINLINE void SetSplitterFlag(EPersistent Flag, bool Value)
     {
-        mPersistentState = (mPersistentState & ~Flag) | (Value * Flag);
+        mPersistentState = SetFlag(mPersistentState,Flag,Value);
     }
 
-    FORCEINLINE void ClearPersistentFlag(int32 Flag)
+    FORCEINLINE void SetSplitterFlag(EPersistent Flag)
     {
-        mPersistentState &= ~Flag;
+        mPersistentState = SetFlag(mPersistentState,Flag);
     }
 
-    FORCEINLINE void TogglePersistentFlag(int32 Flag)
+    FORCEINLINE void ClearSplitterFlag(EPersistent Flag)
     {
-        mPersistentState ^= Flag;
+        mPersistentState = ClearFlag(mPersistentState,Flag);
     }
 
-    bool IsTransientFlagSet(uint32 Flag) const
+    FORCEINLINE void ToggleSplitterFlag(EPersistent Flag)
     {
-        return !!(mTransientState & Flag);
+        mPersistentState = ToggleFlag(mPersistentState,Flag);
     }
 
-    FORCEINLINE void SetTransientFlag(int32 Flag, bool Value = true)
+    FORCEINLINE bool IsSplitterFlagSet(ETransient Flag) const
     {
-        mTransientState = (mTransientState & ~Flag) | (Value * Flag);
+        return IsSet(mTransientState,Flag);
     }
 
-    FORCEINLINE void ClearTransientFlag(int32 Flag)
+    FORCEINLINE void SetSplitterFlag(ETransient Flag, bool Value)
     {
-        mTransientState &= ~Flag;
+        mTransientState = SetFlag(mTransientState,Flag,Value);
     }
 
-    FORCEINLINE void ToggleTransientFlag(int32 Flag)
+    FORCEINLINE void SetSplitterFlag(ETransient Flag)
     {
-        mTransientState ^= Flag;
+        mTransientState = SetFlag(mTransientState,Flag);
+    }
+
+    FORCEINLINE void ClearSplitterFlag(ETransient Flag)
+    {
+        mTransientState = ClearFlag(mTransientState,Flag);
+    }
+
+    FORCEINLINE void ToggleSplitterFlag(ETransient Flag)
+    {
+        mTransientState = ToggleFlag(mTransientState,Flag);
     }
 
 };

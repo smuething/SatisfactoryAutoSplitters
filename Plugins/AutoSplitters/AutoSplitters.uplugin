@@ -1,8 +1,8 @@
 {
 	"FileVersion": 3,
 	"Version": 0,
-	"VersionName": "0.3.7",
-	"SemVersion": "0.3.7",
+	"VersionName": "0.3.9",
+	"SemVersion": "0.3.9",
 	"FriendlyName": "Auto Splitters",
 	"Description": "Auto-balancing splitters for the rest of us who don't want to build gigantic load balancers.",
 	"Category": "Modding",
