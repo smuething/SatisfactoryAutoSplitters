@@ -10,6 +10,7 @@
 #include "Buildables/MFGBuildableAutoSplitter.h"
 #include "Hologram/MFGAutoSplitterHologram.h"
 #include "AutoSplittersLog.h"
+#include "Engine/RendererSettings.h"
 #include "Subsystem/AutoSplittersSubsystem.h"
 #include "Registry/ModContentRegistry.h"
 #include "Resources/FGBuildingDescriptor.h"
@@ -167,7 +168,7 @@ void FAutoSplittersModule::ReplacePreComponentFixSplitters(UWorld* World, AAutoS
 
 		UFGBlueprintFunctionLibrary::AddPopupWithCloseDelegate(
 			LocalController,
-			FText::FromString("Savegame upgraded to AutoSplitters 0.3.x"),
+			FText::FromString("Savegame upgraded from legacy version < 0.3.0"),
 			FText::FromString(Str),
 			CloseDelegate
 		);
@@ -292,6 +293,36 @@ void FAutoSplittersModule::StartupModule()
 					*AutoSplittersSubsystem->GetRunningModVersion().ToString()
 					)
 				);
+		}
+
+		if (IsAlphaVersion)
+		{
+			if (AutoSplittersSubsystem->GetConfig().Preferences.ShowAlphaWarning)
+			{
+				AFGPlayerController* LocalController = UFGBlueprintFunctionLibrary::GetLocalPlayerController(World);
+
+				FPopupClosed CloseDelegate;
+
+				UFGBlueprintFunctionLibrary::AddPopupWithCloseDelegate(
+					LocalController,
+					FText::FromString("AutoSplitters Alpha Version"),
+					FText::FromString("You are running an alpha version of AutoSplitters. There WILL be bugs, so keep you old save games around! "\
+						"You can really help making the mod more stable by reporting bugs on the Modding Discord."\
+						"\n\nIf you don't wnat to see this message anymore, you can disable it in the mod settings."),
+					CloseDelegate
+				);
+
+			}
+			else
+			{
+				AutoSplittersSubsystem->NotifyChat(
+					EAAutoSplittersSubsystemSeverity::Warning,
+					FString::Printf(
+						TEXT("ALPHA version %s. Please report bugs on the modding Discord."),
+						*AutoSplittersSubsystem->GetRunningModVersion().ToString()
+						)
+					);
+			}
 		}
 
 		mLoadedSplitterCount = 0;

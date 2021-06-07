@@ -6,6 +6,7 @@
 
 struct FAutoSplitters_ConfigStruct_Upgrade;
 struct FAutoSplitters_ConfigStruct_Features;
+struct FAutoSplitters_ConfigStruct_Preferences;
 
 USTRUCT(BlueprintType)
 struct FAutoSplitters_ConfigStruct_Upgrade {
@@ -26,6 +27,14 @@ public:
     bool RespectOverclocking;
 };
 
+USTRUCT(BlueprintType)
+struct FAutoSplitters_ConfigStruct_Preferences {
+    GENERATED_BODY()
+public:
+    UPROPERTY(BlueprintReadWrite)
+    bool ShowAlphaWarning;
+};
+
 /* Struct generated from Mod Configuration Asset '/AutoSplitters/AutoSplitters_Config' */
 USTRUCT(BlueprintType)
 struct FAutoSplitters_ConfigStruct {
@@ -36,6 +45,9 @@ public:
 
     UPROPERTY(BlueprintReadWrite)
     FAutoSplitters_ConfigStruct_Features Features;
+
+    UPROPERTY(BlueprintReadWrite)
+    FAutoSplitters_ConfigStruct_Preferences Preferences;
 
     /* Retrieves active configuration value and returns object of this struct containing it */
     static FAutoSplitters_ConfigStruct GetActiveConfig() {

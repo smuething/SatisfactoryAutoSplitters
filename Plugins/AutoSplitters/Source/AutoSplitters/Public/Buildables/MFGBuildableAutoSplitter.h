@@ -11,6 +11,7 @@
 
 #include "AutoSplittersModule.h"
 #include "AutoSplittersRCO.h"
+#include "AutoSplittersLog.h"
 #include "util/BitField.h"
 
 #include "MFGBuildableAutoSplitter.generated.h"
@@ -57,6 +58,49 @@ template<>
 struct is_enum_bitfield<EAutoSplitterTransientFlags> : std::true_type{};
 
 
+
+USTRUCT(BlueprintType)
+struct AUTOSPLITTERS_API FMFGBuildableAutoSplitterReplicatedProperties
+{
+    GENERATED_BODY()
+
+    static constexpr int32 NUM_OUTPUTS = 3;
+
+    UPROPERTY(Transient)
+    uint32 TransientState;
+
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
+    int32 OutputStates[NUM_OUTPUTS];
+
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
+    uint32 PersistentState;
+
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
+    int32 TargetInputRate;
+
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
+    int32 OutputRates[NUM_OUTPUTS];
+
+    UPROPERTY(Transient, BlueprintReadOnly)
+    int32 LeftInCycle;
+
+    UPROPERTY(Transient, BlueprintReadOnly)
+    int32 CycleLength;
+
+    UPROPERTY(Transient, BlueprintReadOnly)
+    int32 CachedInventoryItemCount;
+
+    UPROPERTY(Transient, BlueprintReadOnly)
+    float ItemRate;
+
+    FMFGBuildableAutoSplitterReplicatedProperties();
+
+};
+
+
+class AMFGBuildableAutoSplitter;
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FAMFGBuildableAutoSplitterOnStateChanged,AMFGBuildableAutoSplitter*,AutoSplitter);
+
 /**
  *
  */
@@ -97,7 +141,6 @@ public:
 
     AMFGBuildableAutoSplitter();
     virtual void GetLifetimeReplicatedProps( TArray< FLifetimeProperty >& OutLifetimeProps ) const override;
-    virtual void PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker) override;;
 
     virtual void BeginPlay() override;
     virtual void PostLoadGame_Implementation(int32 saveVersion, int32 gameVersion) override;
@@ -127,6 +170,12 @@ protected:
 
     void Server_ReplicationEnabledTimeout();
 
+    UFUNCTION()
+    void OnRep_Replicated()
+    {
+        OnStateChangedEvent.Broadcast(this);
+    }
+
 private:
 
     void SetupDistribution(bool LoadingSave = false);
@@ -139,50 +188,51 @@ private:
 
 protected:
 
+    UPROPERTY(SaveGame,ReplicatedUsing=OnRep_Replicated, BlueprintReadOnly, Meta = (NoAutoJson))
+    FMFGBuildableAutoSplitterReplicatedProperties mReplicated;
+
     UPROPERTY(Transient)
-    uint32 mTransientState;
-
-    UPROPERTY(SaveGame, Meta = (DeprecatedProperty,NoAutoJson))
-    TArray<float> mOutputRates_DEPRECATED;
-
-    UPROPERTY(SaveGame, BlueprintReadOnly, Meta = (NoAutoJson))
-    TArray<int32> mOutputStates;
-
-    UPROPERTY(SaveGame, BlueprintReadOnly, Meta = (NoAutoJson))
-    TArray<int32> mRemainingItems;
+    uint32 mTransientState_DEPRECATED;
 
     UPROPERTY(SaveGame, Meta = (NoAutoJson))
-    uint32 mPersistentState;
+    TArray<int32> mOutputStates_DEPRECATED;
 
     UPROPERTY(SaveGame, Meta = (NoAutoJson))
-    int32 mTargetInputRate;
+    TArray<int32> mRemainingItems_DEPRECATED;
 
     UPROPERTY(SaveGame, Meta = (NoAutoJson))
-    TArray<int32> mIntegralOutputRates;
+    uint32 mPersistentState_DEPRECATED;
 
-    UPROPERTY(Transient, BlueprintReadOnly)
-    AMFGBuildableAutoSplitter* mRootSplitter;
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
+    int32 mTargetInputRate_DEPRECATED;
 
-    UPROPERTY(Transient, BlueprintReadOnly)
-    TArray<int32> mItemsPerCycle;
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
+    TArray<int32> mIntegralOutputRates_DEPRECATED;
 
-    UPROPERTY(Transient, BlueprintReadOnly)
-    int32 mLeftInCycle;
+    UPROPERTY(Transient)
+    int32 mLeftInCycle_DEPRECATED;
+
+    UPROPERTY(SaveGame, Meta = (NoAutoJson))
+    int32 mLeftInCycleForOutputs[NUM_OUTPUTS];
 
     UPROPERTY(Transient, BlueprintReadWrite)
     bool mDebug;
 
-    UPROPERTY(Transient, BlueprintReadOnly)
-    int32 mCycleLength;
+    UPROPERTY(Transient)
+    int32 mCycleLength_DEPRECATED;
 
-    UPROPERTY(Transient, BlueprintReadOnly)
-    int32 mCachedInventoryItemCount;
+    UPROPERTY(Transient)
+    int32 mCachedInventoryItemCount_DEPRECATED;
 
-    UPROPERTY(Transient, BlueprintReadOnly)
-    float mItemRate;
+    UPROPERTY(Transient)
+    float mItemRate_DEPRECATED;
+
+    UPROPERTY(BlueprintAssignable)
+    FAMFGBuildableAutoSplitterOnStateChanged OnStateChangedEvent;
 
 private:
 
+    std::array<int32,NUM_OUTPUTS> mItemsPerCycle;
     std::array<float,NUM_OUTPUTS> mBlockedFor;
     std::array<int32,NUM_OUTPUTS> mAssignedItems;
     std::array<int32,NUM_OUTPUTS> mGrabbedItems;
@@ -218,7 +268,10 @@ public:
         if (HasAuthority())
             Server_EnableReplication(Duration);
         else
+        {
+            UE_LOG(LogAutoSplitters,Display,TEXT("Forwarding AMFGBuildableAutoSplitter::EnableReplication() to RCO"));
             RCO()->EnableReplication(this,Duration);
+        }
     }
 
     UFUNCTION(BlueprintCallable,BlueprintPure)
@@ -233,7 +286,10 @@ public:
         if (HasAuthority())
             Server_SetTargetRateAutomatic(Automatic);
         else
+        {
+            UE_LOG(LogAutoSplitters,Display,TEXT("Forwarding AMFGBuildableAutoSplitter::SetTargetRateAutomatic() to RCO"));
             RCO()->SetTargetRateAutomatic(this,Automatic);
+        }
     }
 
 
@@ -246,7 +302,10 @@ public:
         if (HasAuthority())
             Server_SetTargetInputRate(Rate);
         else
+        {
+            UE_LOG(LogAutoSplitters,Display,TEXT("Forwarding AMFGBuildableAutoSplitter::SetTargetInputRate() to RCO"));
             RCO()->SetTargetInputRate(this,Rate);
+        }
     }
 
     UFUNCTION(BlueprintPure)
@@ -258,7 +317,10 @@ public:
         if (HasAuthority())
             Server_SetOutputRate(Output,Rate);
         else
+        {
+            UE_LOG(LogAutoSplitters,Display,TEXT("Forwarding AMFGBuildableAutoSplitter::SetOutputRate() to RCO"));
             RCO()->SetOutputRate(this,Output,Rate);
+        }
     }
 
     UFUNCTION(BlueprintCallable)
@@ -267,7 +329,37 @@ public:
         if (HasAuthority())
             Server_SetOutputAutomatic(Output,Automatic);
         else
+        {
+            UE_LOG(LogAutoSplitters,Display,TEXT("Forwarding AMFGBuildableAutoSplitter::OutputAutomatic() to RCO"));
             RCO()->SetOutputAutomatic(this,Output,Automatic);
+        }
+    }
+
+    UFUNCTION(BlueprintPure)
+    bool IsOutputAutomatic(int32 Output) const
+    {
+        if (Output < 0 || Output > NUM_OUTPUTS)
+            return false;
+
+        return IsSet(mReplicated.OutputStates[Output],EOutputState::Automatic);
+    }
+
+    UFUNCTION(BlueprintPure)
+    bool IsOutputAutoSplitter(int32 Output) const
+    {
+        if (Output < 0 || Output > NUM_OUTPUTS)
+            return false;
+
+        return IsSet(mReplicated.OutputStates[Output],EOutputState::AutoSplitter);
+    }
+
+    UFUNCTION(BlueprintPure)
+    bool IsOutputConnected(int32 Output) const
+    {
+        if (Output < 0 || Output > NUM_OUTPUTS)
+            return false;
+
+        return IsSet(mReplicated.OutputStates[Output],EOutputState::Connected);
     }
 
     UFUNCTION(BlueprintCallable)
@@ -276,24 +368,27 @@ public:
         if (HasAuthority())
             Server_BalanceNetwork(this,RootOnly);
         else
+        {
+            UE_LOG(LogAutoSplitters,Display,TEXT("Forwarding AMFGBuildableAutoSplitter::BalanceNetwork() to RCO"));
             RCO()->BalanceNetwork(this,RootOnly);
+        }
     }
 
     uint32 GetSplitterVersion() const
     {
-        return mPersistentState & 0xFFu;
+        return mReplicated.PersistentState & 0xFFu;
     }
 
     UFUNCTION(BlueprintPure)
     int32 GetInventorySize() const
     {
-        return mCachedInventoryItemCount;
+        return mReplicated.CachedInventoryItemCount;
     }
 
     UFUNCTION(BlueprintPure)
     float GetItemRate() const
     {
-        return mItemRate;
+        return mReplicated.ItemRate;
     }
 
     UFUNCTION(BluePrintPure)
@@ -306,8 +401,8 @@ public:
 #endif
     }
 
-    UFUNCTION(BluePrintPure)
-    bool HasCurrentData() const
+    UFUNCTION(BluePrintCallable)
+    bool HasCurrentData() // do not mark this const, as it will turn the function pure in the blueprint
     {
         return HasAuthority() || IsReplicationEnabled();
     }
@@ -315,7 +410,7 @@ public:
     UFUNCTION(BlueprintPure)
     int32 GetError() const
     {
-        return mTransientState & 0xFFu;
+        return mReplicated.TransientState & 0xFFu;
     }
 
     struct FNetworkNode
@@ -351,12 +446,12 @@ private:
 
     void SetError(uint8 Error)
     {
-        mTransientState = (mTransientState & ~0xFFu) | static_cast<uint32>(Error);
+        mReplicated.TransientState = (mReplicated.TransientState & ~0xFFu) | static_cast<uint32>(Error);
     }
 
     void ClearError()
     {
-        mTransientState &= ~0xFFu;;
+        mReplicated.TransientState &= ~0xFFu;;
     }
 
     void FixupConnections();
@@ -383,52 +478,52 @@ private:
 
     FORCEINLINE bool IsSplitterFlagSet(EPersistent Flag) const
     {
-        return IsSet(mPersistentState,Flag);
+        return IsSet(mReplicated.PersistentState,Flag);
     }
 
     FORCEINLINE void SetSplitterFlag(EPersistent Flag, bool Value)
     {
-        mPersistentState = SetFlag(mPersistentState,Flag,Value);
+        mReplicated.PersistentState = SetFlag(mReplicated.PersistentState,Flag,Value);
     }
 
     FORCEINLINE void SetSplitterFlag(EPersistent Flag)
     {
-        mPersistentState = SetFlag(mPersistentState,Flag);
+        mReplicated.PersistentState = SetFlag(mReplicated.PersistentState,Flag);
     }
 
     FORCEINLINE void ClearSplitterFlag(EPersistent Flag)
     {
-        mPersistentState = ClearFlag(mPersistentState,Flag);
+        mReplicated.PersistentState = ClearFlag(mReplicated.PersistentState,Flag);
     }
 
     FORCEINLINE void ToggleSplitterFlag(EPersistent Flag)
     {
-        mPersistentState = ToggleFlag(mPersistentState,Flag);
+        mReplicated.PersistentState = ToggleFlag(mReplicated.PersistentState,Flag);
     }
 
     FORCEINLINE bool IsSplitterFlagSet(ETransient Flag) const
     {
-        return IsSet(mTransientState,Flag);
+        return IsSet(mReplicated.TransientState,Flag);
     }
 
     FORCEINLINE void SetSplitterFlag(ETransient Flag, bool Value)
     {
-        mTransientState = SetFlag(mTransientState,Flag,Value);
+        mReplicated.TransientState = SetFlag(mReplicated.TransientState,Flag,Value);
     }
 
     FORCEINLINE void SetSplitterFlag(ETransient Flag)
     {
-        mTransientState = SetFlag(mTransientState,Flag);
+        mReplicated.TransientState = SetFlag(mReplicated.TransientState,Flag);
     }
 
     FORCEINLINE void ClearSplitterFlag(ETransient Flag)
     {
-        mTransientState = ClearFlag(mTransientState,Flag);
+        mReplicated.TransientState = ClearFlag(mReplicated.TransientState,Flag);
     }
 
     FORCEINLINE void ToggleSplitterFlag(ETransient Flag)
     {
-        mTransientState = ToggleFlag(mTransientState,Flag);
+        mReplicated.TransientState = ToggleFlag(mReplicated.TransientState,Flag);
     }
 
 };

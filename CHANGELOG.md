@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 - Alpha
+
+Add missing bits for multiplayer support
+
+### Changes
+- Move all replicated properties into a nested struct to simplify change tracking (only requires a single onRep function). This bumps the serialization version.
+- Also cleanup naming of some properties allowed by the version bump.
+- Change all fixed size per-output `TArray`s into C arrays for lower overhead.
+- Enable and disable dormancy as needed when clients interact with splitter.
+- Add new `OnStateChanged` event that gets fired on client and server whenever state updates.
+- That's a lie, as on the server we cannot fire the event from factory tick, so we have to use
+  a timer in the widget.
+- Update the widget to work correctly in both cient and server settings.
+- Clean up the widget by removing lots of unused leftover functions, macros and variables.
+- Add tracking functionality that warns users if they are playing with an alpha version.
+- Add logging to RPCs
+- Make sure all players are using 0.4.0 when playing in multiplayer.
+- Remove earlier attempt at using a `ReplicationDetailsActor`. That was more finicky than it's worth, because the `FGBuildableConveyorAttachment` messes with the setup.
+
 ## 0.3.9
 
 ### Changes

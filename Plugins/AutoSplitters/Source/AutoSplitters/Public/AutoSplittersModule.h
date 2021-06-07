@@ -36,6 +36,9 @@ class FAutoSplittersModule : public IModuleInterface
 	void ReplacePreComponentFixSplitters(UWorld* World, AAutoSplittersSubsystem* AutoSplittersSubsystem);
 
 public:
+
+	static const bool IsAlphaVersion = true;
+
 	virtual void StartupModule() override;
 
 	static const FName ModReference;

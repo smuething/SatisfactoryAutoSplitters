@@ -147,7 +147,7 @@ void AAutoSplittersSubsystem::PreSaveGame_Implementation(int32 saveVersion, int3
 
 void AAutoSplittersSubsystem::PostLoadGame_Implementation(int32 saveVersion, int32 gameVersion)
 {
-    // if serialized properties are missing, they get zeroed out and we get our legacy version marker
+    // if serialized properties are missing, they get zeroed out and we get our legacy version marker by copying them into mLoadedModVersion
     mLoadedModVersion = FVersion(mVersionMajor,mVersionMinor,mVersionPatch);
 }
 
@@ -158,6 +158,5 @@ bool AAutoSplittersSubsystem::NeedTransform_Implementation()
 
 bool AAutoSplittersSubsystem::ShouldSave_Implementation() const
 {
-    UE_LOG(LogAutoSplitters,Display,TEXT("In ShouldSave_Implementation()"));
     return true;
 }

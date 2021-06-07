@@ -9,7 +9,6 @@
 #include "FGFactoryConnectionComponent.h"
 #include "Buildables/FGBuildableConveyorBase.h"
 #include "Subsystem/AutoSplittersSubsystem.h"
-#include "Replication/MFGReplicationDetailActor_BuildableAutoSplitter.h"
 
 #if AUTO_SPLITTERS_DEBUG
 #define DEBUG_THIS_SPLITTER mDebug
@@ -36,20 +35,22 @@ constexpr auto MakeTArray(const T& Value) -> TArray<T,TFixedAllocator<n>>
     return Result;
 }
 
+FMFGBuildableAutoSplitterReplicatedProperties::FMFGBuildableAutoSplitterReplicatedProperties()
+    : TransientState(0)
+    , PersistentState(0) // Do the setup in BeginPlay(), otherwise we cannot detect version changes during loading
+    , TargetInputRate(0)
+    , LeftInCycle(0)
+    , CycleLength(0)
+    , CachedInventoryItemCount(0)
+    , ItemRate(0.0f)
+{
+    std::fill_n(OutputStates,NUM_OUTPUTS,ToBitfieldFlag(EOutputState::Automatic));
+    std::fill_n(OutputRates,NUM_OUTPUTS,ToBitfieldFlag(EOutputState::Automatic));
+}
+
 AMFGBuildableAutoSplitter::AMFGBuildableAutoSplitter()
-    : mTransientState(0)
-    , mOutputStates(MakeTArray<NUM_OUTPUTS>(ToBitfieldFlag(EOutputState::Automatic)))
-    , mRemainingItems(MakeTArray<NUM_OUTPUTS>(0))
-    , mPersistentState(0) // Do the setup in BeginPlay(), otherwise we cannot detect version changes during loading
-    , mTargetInputRate(0)
-    , mIntegralOutputRates(MakeTArray<NUM_OUTPUTS>(FRACTIONAL_RATE_MULTIPLIER))
-    , mRootSplitter(nullptr)
-    , mItemsPerCycle(MakeTArray<NUM_OUTPUTS>(0))
-    , mLeftInCycle(0)
-    , mDebug(false)
-    , mCycleLength(0)
-    , mCachedInventoryItemCount(0)
-    , mItemRate(0.0f)
+    : mDebug(false)
+    , mItemsPerCycle(make_array<NUM_OUTPUTS>(0))
     , mBlockedFor(make_array<NUM_OUTPUTS>(0.0f))
     , mAssignedItems(make_array<NUM_OUTPUTS>(0))
     , mGrabbedItems(make_array<NUM_OUTPUTS>(0))
@@ -58,37 +59,14 @@ AMFGBuildableAutoSplitter::AMFGBuildableAutoSplitter()
     , mNeedsInitialDistributionSetup(true)
     , mCycleTime(0.0f)
     , mReallyGrabbed(0)
-{}
+{
+    std::fill_n(mLeftInCycleForOutputs,NUM_OUTPUTS,0);
+}
 
 void AMFGBuildableAutoSplitter::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const
 {
     Super::GetLifetimeReplicatedProps(OutLifetimeProps);
-    /*
-    DOREPLIFETIME(AMFGBuildableAutoSplitter,mTransientState);
-    DOREPLIFETIME(AMFGBuildableAutoSplitter,mOutputStates);
-    DOREPLIFETIME(AMFGBuildableAutoSplitter,mPersistentState);
-    DOREPLIFETIME(AMFGBuildableAutoSplitter,mTargetInputRate);
-    DOREPLIFETIME(AMFGBuildableAutoSplitter,mIntegralOutputRates);
-    DOREPLIFETIME(AMFGBuildableAutoSplitter,mLeftInCycle);
-    DOREPLIFETIME(AMFGBuildableAutoSplitter,mCycleLength);
-    DOREPLIFETIME(AMFGBuildableAutoSplitter,mCachedInventoryItemCount);
-    DOREPLIFETIME(AMFGBuildableAutoSplitter,mItemRate);
-    */
-}
-
-void AMFGBuildableAutoSplitter::PreReplication(IRepChangedPropertyTracker& ChangedPropertyTracker)
-{
-    Super::PreReplication(ChangedPropertyTracker);
-    /*
-    DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mOutputStates,IsTransientFlagSet(IS_REPLICATION_ENABLED));
-    DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mPersistentState,IsTransientFlagSet(IS_REPLICATION_ENABLED));
-    DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mTargetInputRate,IsTransientFlagSet(IS_REPLICATION_ENABLED));
-    DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mIntegralOutputRates,IsTransientFlagSet(IS_REPLICATION_ENABLED));
-    DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mLeftInCycle,IsTransientFlagSet(IS_REPLICATION_ENABLED));
-    DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mCycleLength,IsTransientFlagSet(IS_REPLICATION_ENABLED));
-    DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mCachedInventoryItemCount,IsTransientFlagSet(IS_REPLICATION_ENABLED));
-    DOREPLIFETIME_ACTIVE_OVERRIDE(AMFGBuildableAutoSplitter,mItemRate,IsTransientFlagSet(IS_REPLICATION_ENABLED));
-    */
+    DOREPLIFETIME(AMFGBuildableAutoSplitter,mReplicated);
 }
 
 void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
@@ -105,14 +83,14 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
     if (DEBUG_THIS_SPLITTER)
     {
         UE_LOG(LogAutoSplitters,Display,TEXT("transient=%d persistent=%d cycleLength=%d leftInCycle=%d outputstates=(%d %d %d) remaining=(%d %d %d)"),
-            mTransientState,mPersistentState,
-            mCycleLength,mLeftInCycle,
-            mOutputStates[0],mOutputStates[1],mOutputStates[2],
-            mRemainingItems[0],mRemainingItems[1],mRemainingItems[2]
+            mReplicated.TransientState,mReplicated.PersistentState,
+            mReplicated.CycleLength,mReplicated.LeftInCycle,
+            mReplicated.OutputStates[0],mReplicated.OutputStates[1],mReplicated.OutputStates[2],
+            mLeftInCycleForOutputs[0],mLeftInCycleForOutputs[1],mLeftInCycleForOutputs[2]
             );
         UE_LOG(LogAutoSplitters,Display,TEXT("targetInput=%d outputRates=(%d %d %d) itemsPerCycle=(%d %d %d)"),
-            mTargetInputRate,
-            mIntegralOutputRates[0],mIntegralOutputRates[1],mIntegralOutputRates[2],
+            mReplicated.TargetInputRate,
+            mReplicated.OutputRates[0],mReplicated.OutputRates[1],mReplicated.OutputRates[2],
             mItemsPerCycle[0],mItemsPerCycle[1],mItemsPerCycle[2]
             );
     }
@@ -134,24 +112,24 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
 
     for (int i = 0 ; i < NUM_OUTPUTS ; ++i)
     {
-        mLeftInCycle -= mGrabbedItems[i];
+        mReplicated.LeftInCycle -= mGrabbedItems[i];
         mGrabbedItems[i] = 0;
         mAssignedItems[i] = 0;
     }
     mInventorySlotEnd = make_array<NUM_OUTPUTS>(0);
     mAssignedOutputs = make_array<MAX_INVENTORY_SIZE>(-1);
 
-    if (mTargetInputRate == 0 && mInputs[0]->IsConnected())
+    if (mReplicated.TargetInputRate == 0 && mInputs[0]->IsConnected())
     {
         auto [_,Rate,Ready] = FindAutoSplitterAndMaxBeltRate(mInputs[0],false);
-        mTargetInputRate = Rate;
+        mReplicated.TargetInputRate = Rate;
     }
 
     int32 Connections = 0;
     bool NeedsBalancing = false;
     for (int32 i = 0 ; i < NUM_OUTPUTS ; ++i)
     {
-        const bool Connected = IsSet(mOutputStates[i],EOutputState::Connected);
+        const bool Connected = IsSet(mReplicated.OutputStates[i],EOutputState::Connected);
         Connections += Connected;
         if (Connected != mOutputs[i]->IsConnected())
         {
@@ -175,28 +153,28 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
         SetupDistribution();
     }
 
-    mCachedInventoryItemCount = 0;
+    mReplicated.CachedInventoryItemCount = 0;
     auto PopulatedInventorySlots = make_array<MAX_INVENTORY_SIZE>(-1);
     for (int32 i = 0 ; i < mInventorySizeX ; ++i)
     {
         if(mBufferInventory->IsSomethingOnIndex(i))
         {
-            PopulatedInventorySlots[mCachedInventoryItemCount++] = i;
+            PopulatedInventorySlots[mReplicated.CachedInventoryItemCount++] = i;
         }
     }
 
-    if (Connections == 0 || mCachedInventoryItemCount == 0)
+    if (Connections == 0 || mReplicated.CachedInventoryItemCount == 0)
     {
         mCycleTime += dt;
         return;
     }
 
-    if (mLeftInCycle < -40)
+    if (mReplicated.LeftInCycle < -40)
     {
-        UE_LOG(LogAutoSplitters,Warning,TEXT("mLeftInCycle too negative (%d), resetting"),mLeftInCycle);
+        UE_LOG(LogAutoSplitters,Warning,TEXT("mLeftInCycle too negative (%d), resetting"),mReplicated.LeftInCycle);
         PrepareCycle(false,true);
     }
-    else if (mLeftInCycle <= 0)
+    else if (mReplicated.LeftInCycle <= 0)
     {
         PrepareCycle(true);
     }
@@ -206,7 +184,7 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
 
     auto NextInventorySlot = make_array<NUM_OUTPUTS>(MAX_INVENTORY_SIZE);
 
-    for (int32 ActiveSlot = 0 ; ActiveSlot < mCachedInventoryItemCount ; ++ActiveSlot)
+    for (int32 ActiveSlot = 0 ; ActiveSlot < mReplicated.CachedInventoryItemCount ; ++ActiveSlot)
     {
         if (DEBUG_THIS_SPLITTER)
         {
@@ -218,7 +196,7 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
         {
             // Adding the grabbed items in the next line de-skews the algorithm if the output has been
             // penalized for an earlier inventory slot
-            AssignableItems[i] = mRemainingItems[i] - mAssignedItems[i] + mGrabbedItems[i];
+            AssignableItems[i] = mLeftInCycleForOutputs[i] - mAssignedItems[i] + mGrabbedItems[i];
             const auto ItemPriority = AssignableItems[i] * mPriorityStepSize[i];
             if (AssignableItems[i] > 0 && ItemPriority > Priority)
             {
@@ -240,7 +218,7 @@ void AMFGBuildableAutoSplitter::Factory_Tick(float dt)
                 UE_LOG(LogAutoSplitters,Display,TEXT("Output %d is blocked, reassigning item and penalizing output"),Next);
             }
             Penalized[Next] = true;
-            --mRemainingItems[Next];
+            --mLeftInCycleForOutputs[Next];
             ++mAssignedItems[Next];
             ++mGrabbedItems[Next]; // this is a blatant lie, but it will cause the correct update of mLeftInCycle during the next tick
             --AssignableItems[Next];
@@ -318,20 +296,6 @@ void AMFGBuildableAutoSplitter::PostLoadGame_Implementation(int32 saveVersion, i
     if (Connections.Num() > 4)
     {
         UE_LOG(LogAutoSplitters,Display,TEXT("%s: ancient splitter created with 0.2.0 or older"),*GetName());
-
-#if AUTO_SPLITTERS_DEBUG
-
-        UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %s: connections=%d outputrates_deprecated=%d outputstates=(%d %d %d)"),
-            *GetName(),
-            Connections.Num(),
-            mOutputRates_DEPRECATED.Num(),
-            mOutputStates[0],mOutputStates[1],mOutputStates[2]
-            );
-
-#endif
-
-        mOutputRates_DEPRECATED.Empty();
-
         SetSplitterFlag(EPersistent::NeedsConnectionsFixup);
     }
 
@@ -367,13 +331,25 @@ void AMFGBuildableAutoSplitter::BeginPlay()
             switch (AutoSplittersSubsystem->GetSerializationVersion())
             {
             case EAutoSplittersSerializationVersion::Legacy:
-                {
-                    break;
-                }
+                // can't ever get here
             case EAutoSplittersSerializationVersion::FixedPrecisionArithmetic:
                 {
-                    break;
+#if UE_BUILD_SHIPPING
+                    // Microsoft's overzealous debug checks dont let us use std::copy() with a naked C array in debug
+                    // mode, so just turn it off
+                    UE_LOG(LogAutoSplitters,Display,TEXT("%s: Upgrading to NestedReplicationStruct"),*GetName());
+                    std::copy(mOutputStates_DEPRECATED.begin(),mOutputStates_DEPRECATED.end(),mReplicated.OutputStates);
+                    mOutputStates_DEPRECATED.Empty();
+                    mReplicated.PersistentState = mPersistentState_DEPRECATED;
+                    mReplicated.TargetInputRate = mTargetInputRate_DEPRECATED;
+                    std::copy(mIntegralOutputRates_DEPRECATED.begin(),mIntegralOutputRates_DEPRECATED.end(),mReplicated.OutputRates);
+                    mIntegralOutputRates_DEPRECATED.Empty();
+                    std::copy(mRemainingItems_DEPRECATED.begin(),mRemainingItems_DEPRECATED.end(),mLeftInCycleForOutputs);
+                    mRemainingItems_DEPRECATED.Empty();
+#endif
                 }
+            case EAutoSplittersSerializationVersion::NestedReplicationStruct:
+                break;
             default:
                 {
                     UE_LOG(LogAutoSplitters,Error,TEXT("AutoSplitter %s was saved with an unsupported serialization version, will be removed"),*GetName());
@@ -381,8 +357,8 @@ void AMFGBuildableAutoSplitter::BeginPlay()
                 }
             }
 
-            mLeftInCycle = std::accumulate(mRemainingItems.begin(),mRemainingItems.end(),0);
-            mCycleLength = std::accumulate(mItemsPerCycle.begin(),mItemsPerCycle.end(),0);
+            mReplicated.LeftInCycle = std::accumulate(mLeftInCycleForOutputs,mLeftInCycleForOutputs + NUM_OUTPUTS,0);
+            mReplicated.CycleLength = std::accumulate(mItemsPerCycle.begin(),mItemsPerCycle.end(),0);
             mCycleTime = -100000.0; // this delays item rate calculation to the first full cycle when loading the game
 
             SetupDistribution(true);
@@ -435,7 +411,7 @@ bool AMFGBuildableAutoSplitter::Factory_GrabOutput_Implementation(UFGFactoryConn
 
     if (mAssignedItems[Output] <= mGrabbedItems[Output])
     {
-        if (!IsSet(mOutputStates[Output],EOutputState::Connected))
+        if (!IsSet(mReplicated.OutputStates[Output],EOutputState::Connected))
         {
             mBalancingRequired = true;
         }
@@ -456,7 +432,7 @@ bool AMFGBuildableAutoSplitter::Factory_GrabOutput_Implementation(UFGFactoryConn
             out_item = Stack.Item;
             out_OffsetBeyond = mGrabbedItems[Output] * AFGBuildableConveyorBase::ITEM_SPACING;
             ++mGrabbedItems[Output];
-            --mRemainingItems[Output];
+            --mLeftInCycleForOutputs[Output];
             ++mReallyGrabbed;
             mNextInventorySlot[Output] = Slot + 1;
 
@@ -471,7 +447,7 @@ bool AMFGBuildableAutoSplitter::Factory_GrabOutput_Implementation(UFGFactoryConn
 
     UE_LOG(LogAutoSplitters,Warning,TEXT("Output %d: No valid output found, this should not happen!"),Output);
 
-    if (!IsSet(mOutputStates[Output],EOutputState::Connected))
+    if (!IsSet(mReplicated.OutputStates[Output],EOutputState::Connected))
     {
         mBalancingRequired = true;
     }
@@ -488,10 +464,10 @@ void AMFGBuildableAutoSplitter::SetupDistribution(bool LoadingSave)
             LogAutoSplitters,
             Display,
             TEXT("SetupDistribution() input=%d outputs=(%d %d %d)"),
-            mTargetInputRate,
-            mIntegralOutputRates[0],
-            mIntegralOutputRates[1],
-            mIntegralOutputRates[2]
+            mReplicated.TargetInputRate,
+            mReplicated.OutputRates[0],
+            mReplicated.OutputRates[1],
+            mReplicated.OutputRates[2]
             );
     }
 
@@ -499,21 +475,21 @@ void AMFGBuildableAutoSplitter::SetupDistribution(bool LoadingSave)
     {
         for (int32 i = 0 ; i < NUM_OUTPUTS ; ++i)
         {
-            mOutputStates[i] = SetFlag(mOutputStates[i],EOutputState::Connected,mOutputs[i]->IsConnected());
+            mReplicated.OutputStates[i] = SetFlag(mReplicated.OutputStates[i],EOutputState::Connected,mOutputs[i]->IsConnected());
         }
     }
 
-    if (std::none_of(mOutputStates.begin(),mOutputStates.end(),[](auto State) { return IsSet(State,EOutputState::Connected); }))
+    if (std::none_of(mReplicated.OutputStates,mReplicated.OutputStates+NUM_OUTPUTS,[](auto State) { return IsSet(State,EOutputState::Connected); }))
     {
-        mIntegralOutputRates.Init(FRACTIONAL_RATE_MULTIPLIER,NUM_OUTPUTS);
-        mItemsPerCycle.Init(0,NUM_OUTPUTS);
+        std::fill_n(mReplicated.OutputRates,NUM_OUTPUTS,FRACTIONAL_RATE_MULTIPLIER);
+        std::fill_n(mItemsPerCycle.begin(),NUM_OUTPUTS,0);
         return;
     }
 
     // calculate item counts per cycle
     for (int32 i = 0 ; i < NUM_OUTPUTS ; ++i)
     {
-        mItemsPerCycle[i] = IsSet(mOutputStates[i], EOutputState::Connected) * mIntegralOutputRates[i];
+        mItemsPerCycle[i] = IsSet(mReplicated.OutputStates[i], EOutputState::Connected) * mReplicated.OutputRates[i];
     }
 
 #if UE_BUILD_SHIPPING
@@ -546,13 +522,13 @@ void AMFGBuildableAutoSplitter::SetupDistribution(bool LoadingSave)
     for (auto& Item : mItemsPerCycle)
         Item /= GCD;
 
-    mCycleLength = 0;
+    mReplicated.CycleLength = 0;
     bool Changed = false;
     for (int32 i = 0 ; i < NUM_OUTPUTS ; ++i)
     {
-        if (IsSet(mOutputStates[i],EOutputState::Connected))
+        if (IsSet(mReplicated.OutputStates[i],EOutputState::Connected))
         {
-            mCycleLength += mItemsPerCycle[i];
+            mReplicated.CycleLength += mItemsPerCycle[i];
             float StepSize = 0.0f;
             if (mItemsPerCycle[i] > 0)
             {
@@ -577,8 +553,8 @@ void AMFGBuildableAutoSplitter::SetupDistribution(bool LoadingSave)
 
     if (Changed && !LoadingSave)
     {
-        mRemainingItems = {0,0,0};
-        mLeftInCycle = 0;
+        std::fill_n(mLeftInCycleForOutputs,NUM_OUTPUTS,0);
+        mReplicated.LeftInCycle = 0;
         PrepareCycle(false);
     }
 
@@ -600,29 +576,29 @@ void AMFGBuildableAutoSplitter::PrepareCycle(const bool AllowCycleExtension, con
     if (!Reset && mCycleTime > 0.0)
     {
         // update statistics
-        if (mItemRate > 0.0)
+        if (mReplicated.ItemRate > 0.0)
         {
-            mItemRate = EXPONENTIAL_AVERAGE_WEIGHT * 60 * mReallyGrabbed / mCycleTime + (1.0-EXPONENTIAL_AVERAGE_WEIGHT) * mItemRate;
+            mReplicated.ItemRate = EXPONENTIAL_AVERAGE_WEIGHT * 60 * mReallyGrabbed / mCycleTime + (1.0-EXPONENTIAL_AVERAGE_WEIGHT) * mReplicated.ItemRate;
         }
         else
         {
             // bootstrap
-            mItemRate = 60.0 * mReallyGrabbed / mCycleTime;
+            mReplicated.ItemRate = 60.0 * mReallyGrabbed / mCycleTime;
         }
 
         if (AllowCycleExtension && mCycleTime < 2.0)
         {
             if (DEBUG_THIS_SPLITTER)
             {
-                UE_LOG(LogAutoSplitters,Display,TEXT("Cycle time too short (%f), doubling cycle length to %d"),mCycleTime,2*mCycleLength);
+                UE_LOG(LogAutoSplitters,Display,TEXT("Cycle time too short (%f), doubling cycle length to %d"),mCycleTime,2*mReplicated.CycleLength);
             }
-            mCycleLength *= 2;
+            mReplicated.CycleLength *= 2;
             for (int i = 0 ; i < NUM_OUTPUTS ; ++i)
                 mItemsPerCycle[i] *= 2;
         }
         else if (mCycleTime > 10.0)
         {
-            bool CanShortenCycle = !(mCycleLength & 1);
+            bool CanShortenCycle = !(mReplicated.CycleLength & 1);
             for (int i = 0 ; i < NUM_OUTPUTS ; ++i)
                 CanShortenCycle = CanShortenCycle && !(mItemsPerCycle[i] & 1);
 
@@ -630,9 +606,9 @@ void AMFGBuildableAutoSplitter::PrepareCycle(const bool AllowCycleExtension, con
             {
                 if (DEBUG_THIS_SPLITTER)
                 {
-                    UE_LOG(LogAutoSplitters,Display,TEXT("Cycle time too long (%f), halving cycle length to %d"),mCycleTime,mCycleLength/2);
+                    UE_LOG(LogAutoSplitters,Display,TEXT("Cycle time too long (%f), halving cycle length to %d"),mCycleTime,mReplicated.CycleLength/2);
                 }
-                mCycleLength /= 2;
+                mReplicated.CycleLength /= 2;
                 for (int i = 0 ; i < NUM_OUTPUTS ; ++i)
                     mItemsPerCycle[i] /= 2;
             }
@@ -644,26 +620,26 @@ void AMFGBuildableAutoSplitter::PrepareCycle(const bool AllowCycleExtension, con
 
     if (Reset)
     {
-        mLeftInCycle = mCycleLength;
+        mReplicated.LeftInCycle = mReplicated.CycleLength;
 
         for (int i = 0; i < NUM_OUTPUTS ; ++i)
         {
-            if (IsSet(mOutputStates[i],EOutputState::Connected) && mIntegralOutputRates[i] > 0)
-                mRemainingItems[i] = mItemsPerCycle[i];
+            if (IsSet(mReplicated.OutputStates[i],EOutputState::Connected) && mReplicated.OutputRates[i] > 0)
+                mLeftInCycleForOutputs[i] = mItemsPerCycle[i];
             else
-                mRemainingItems[i] = 0;
+                mLeftInCycleForOutputs[i] = 0;
         }
     }
     else
     {
-        mLeftInCycle += mCycleLength;
+        mReplicated.LeftInCycle += mReplicated.CycleLength;
 
         for (int i = 0; i < NUM_OUTPUTS ; ++i)
         {
-            if (IsSet(mOutputStates[i],EOutputState::Connected) && mIntegralOutputRates[i] > 0)
-                mRemainingItems[i] += mItemsPerCycle[i];
+            if (IsSet(mReplicated.OutputStates[i],EOutputState::Connected) && mReplicated.OutputRates[i] > 0)
+                mLeftInCycleForOutputs[i] += mItemsPerCycle[i];
             else
-                mRemainingItems[i] = 0;
+                mLeftInCycleForOutputs[i] = 0;
         }
     }
 }
@@ -676,8 +652,18 @@ void AMFGBuildableAutoSplitter::Server_EnableReplication(float Duration)
     }
 
     UE_LOG(LogAutoSplitters,Display,TEXT("Enabling full data replication for Auto Splitter %p"),this);
+    UE_LOG(LogAutoSplitters,Display,TEXT("State: IsReplicated=%s detailActor=%p bReplicates=%s dormancy=%d NetFrequency=%f MinNetFrequency=%f"),
+        GetIsReplicated() ? TEXT("true") : TEXT("false"),
+        mReplicationDetailActor,
+        bReplicates ? TEXT("true") : TEXT("false"),
+        NetDormancy.GetValue(),
+        NetUpdateFrequency,
+        MinNetUpdateFrequency
+    );
 
     SetSplitterFlag(ETransient::IsReplicationEnabled);
+    SetNetDormancy(DORM_Awake);
+    ForceNetUpdate();
     GetWorldTimerManager().SetTimer(mReplicationTimer,this,&AMFGBuildableAutoSplitter::Server_ReplicationEnabledTimeout,Duration,false);
 }
 
@@ -693,12 +679,13 @@ bool AMFGBuildableAutoSplitter::Server_SetTargetRateAutomatic(bool Automatic)
         SetSplitterFlag(EPersistent::ManualInputRate,Automatic);
         return false;
     }
+    OnStateChangedEvent.Broadcast(this);
     return true;
 }
 
 float AMFGBuildableAutoSplitter::GetTargetInputRate() const
 {
-    return mTargetInputRate * INV_FRACTIONAL_RATE_MULTIPLIER;
+    return mReplicated.TargetInputRate * INV_FRACTIONAL_RATE_MULTIPLIER;
 }
 
 bool AMFGBuildableAutoSplitter::Server_SetTargetInputRate(float Rate)
@@ -711,12 +698,13 @@ bool AMFGBuildableAutoSplitter::Server_SetTargetInputRate(float Rate)
 
     int32 IntRate = static_cast<int32>(Rate * FRACTIONAL_RATE_MULTIPLIER);
 
-    bool Changed = mTargetInputRate != IntRate;
-    mTargetInputRate = IntRate;
+    bool Changed = mReplicated.TargetInputRate != IntRate;
+    mReplicated.TargetInputRate = IntRate;
 
     if (Changed)
         Server_BalanceNetwork(this);
 
+    OnStateChangedEvent.Broadcast(this);
     return true;
 }
 
@@ -725,7 +713,7 @@ float AMFGBuildableAutoSplitter::GetOutputRate(int32 Output) const
     if (Output < 0 || Output > NUM_OUTPUTS -1)
         return NAN;
 
-    return static_cast<float>(mIntegralOutputRates[Output]) * INV_FRACTIONAL_RATE_MULTIPLIER;
+    return static_cast<float>(mReplicated.OutputRates[Output]) * INV_FRACTIONAL_RATE_MULTIPLIER;
 }
 
 bool AMFGBuildableAutoSplitter::Server_SetOutputRate(const int32 Output, const float Rate)
@@ -754,7 +742,7 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputRate(const int32 Output, const f
         return false;
     }
 
-    if (IsSet(mOutputStates[Output],EOutputState::Automatic))
+    if (IsSet(mReplicated.OutputStates[Output],EOutputState::Automatic))
     {
         UE_LOG(
             LogAutoSplitters,
@@ -765,11 +753,11 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputRate(const int32 Output, const f
         return false;
     }
 
-    if (mIntegralOutputRates[Output] == Rate)
+    if (mReplicated.OutputRates[Output] == Rate)
         return true;
 
-    int32 OldRate = mIntegralOutputRates[Output];
-    mIntegralOutputRates[Output] = IntRate;
+    int32 OldRate = mReplicated.OutputRates[Output];
+    mReplicated.OutputRates[Output] = IntRate;
 
     auto [DownstreamAutoSplitter,_,Ready] = FindAutoSplitterAndMaxBeltRate(mOutputs[Output],true);
 
@@ -778,23 +766,24 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputRate(const int32 Output, const f
     if (DownstreamAutoSplitter)
     {
         OldManualInputRate = DownstreamAutoSplitter->IsSplitterFlagSet(EPersistent::ManualInputRate);
-        OldTargetInputRate = DownstreamAutoSplitter->mTargetInputRate;
+        OldTargetInputRate = DownstreamAutoSplitter->mReplicated.TargetInputRate;
         DownstreamAutoSplitter->SetSplitterFlag(EPersistent::ManualInputRate);
-        DownstreamAutoSplitter->mTargetInputRate = IntRate;
+        DownstreamAutoSplitter->mReplicated.TargetInputRate = IntRate;
     }
 
     auto [valid,_2] = Server_BalanceNetwork(this);
 
     if (!valid)
     {
-        mIntegralOutputRates[Output] = OldRate;
+        mReplicated.OutputRates[Output] = OldRate;
         if (DownstreamAutoSplitter)
         {
             DownstreamAutoSplitter->SetSplitterFlag(EPersistent::ManualInputRate,OldManualInputRate);
-            DownstreamAutoSplitter->mTargetInputRate = OldTargetInputRate;
+            DownstreamAutoSplitter->mReplicated.TargetInputRate = OldTargetInputRate;
         }
     }
 
+    OnStateChangedEvent.Broadcast(this);
     return valid;
 }
 
@@ -804,7 +793,7 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputAutomatic(int32 Output, bool Aut
     if (Output < 0 || Output > NUM_OUTPUTS - 1)
         return false;
 
-    if (Automatic == IsSet(mOutputStates[Output],EOutputState::Automatic))
+    if (Automatic == IsSet(mReplicated.OutputStates[Output],EOutputState::Automatic))
         return true;
 
     auto [DownstreamAutoSplitter,_,Ready] = FindAutoSplitterAndMaxBeltRate(mOutputs[Output],true);
@@ -814,13 +803,13 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputAutomatic(int32 Output, bool Aut
     }
     else
     {
-        mOutputStates[Output] = SetFlag(mOutputStates[Output],EOutputState::Automatic,Automatic);
+        mReplicated.OutputStates[Output] = SetFlag(mReplicated.OutputStates[Output],EOutputState::Automatic,Automatic);
     }
 
     auto [valid,_2] = Server_BalanceNetwork(this);
     if (!valid)
     {
-        mOutputStates[Output] = SetFlag(mOutputStates[Output], EOutputState::Automatic,!Automatic);
+        mReplicated.OutputStates[Output] = SetFlag(mReplicated.OutputStates[Output], EOutputState::Automatic,!Automatic);
         if (DownstreamAutoSplitter)
         {
             DownstreamAutoSplitter->SetSplitterFlag(EPersistent::ManualInputRate,Automatic);
@@ -843,6 +832,7 @@ bool AMFGBuildableAutoSplitter::Server_SetOutputAutomatic(int32 Output, bool Aut
             Automatic ? TEXT("automatic") : TEXT("manual")
         );
     }
+    OnStateChangedEvent.Broadcast(this);
     return valid;
 }
 
@@ -853,7 +843,9 @@ void AMFGBuildableAutoSplitter::Server_ReplicationEnabledTimeout()
         UE_LOG(LogAutoSplitters,Fatal,TEXT("AMFGBuildableAutoSplitter::Server_ReplicationEnabledTimeout() may only be called on server"));
     }
     UE_LOG(LogAutoSplitters,Display,TEXT("Disabling full data replication for Auto Splitter %p"),this);
+    SetNetDormancy(DORM_DormantAll);
     ClearSplitterFlag(ETransient::IsReplicationEnabled);
+    FlushNetDormancy(); // To get the modified replication state to the clients
 }
 
 
@@ -868,13 +860,6 @@ void AMFGBuildableAutoSplitter::FixupConnections()
     UE_LOG(LogAutoSplitters, Display, TEXT("%s: Clearing out connection components for pre 0.3.0 splitter to avoid crashing"),*GetName());
 
 #if AUTO_SPLITTERS_DEBUG
-
-    UE_LOG(LogAutoSplitters,Display,TEXT("Splitter %p: connections=%d outputrates_deprecated=%d outputstates=(%d %d %d)"),
-        this,
-        Connections.Num(),
-        mOutputRates_DEPRECATED.Num(),
-        mOutputStates[0],mOutputStates[1],mOutputStates[2]
-        );
 
     TInlineComponentArray<UFGFactoryConnectionComponent*, 6> Partners;
     int32 PartnerCount = 0;
@@ -968,24 +953,25 @@ void AMFGBuildableAutoSplitter::FixupConnections()
 
 }
 
+
 void AMFGBuildableAutoSplitter::SetupInitialDistributionState()
 {
     auto [InputSplitter,MaxInputRate,Ready] = FindAutoSplitterAndMaxBeltRate(mInputs[0], false);
-    mTargetInputRate = MaxInputRate;
+    mReplicated.TargetInputRate = MaxInputRate;
     for (int32 i = 0; i < NUM_OUTPUTS; ++i)
     {
         auto [OutputSplitter,MaxRate,Ready2] = FindAutoSplitterAndMaxBeltRate(mOutputs[i], true);
         if (MaxRate > 0)
         {
-            mIntegralOutputRates[i] = FRACTIONAL_RATE_MULTIPLIER;
-            mOutputStates[i] = SetFlag(mOutputStates[i], EOutputState::Connected);
+            mReplicated.OutputRates[i] = FRACTIONAL_RATE_MULTIPLIER;
+            mReplicated.OutputStates[i] = SetFlag(mReplicated.OutputStates[i], EOutputState::Connected);
         }
         else
         {
-            mIntegralOutputRates[i] = 0;
-            mOutputStates[i] = ClearFlag(mOutputStates[i], EOutputState::Connected);
+            mReplicated.OutputRates[i] = 0;
+            mReplicated.OutputStates[i] = ClearFlag(mReplicated.OutputStates[i], EOutputState::Connected);
         }
-        mOutputStates[i] = SetFlag(mOutputStates[i], EOutputState::AutoSplitter, OutputSplitter != nullptr);
+        mReplicated.OutputStates[i] = SetFlag(mReplicated.OutputStates[i], EOutputState::AutoSplitter, OutputSplitter != nullptr);
     }
     mNeedsInitialDistributionSetup = false;
     mBalancingRequired = true;
@@ -1061,60 +1047,60 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
             {
                 if (Node.MaxOutputRates[i] == 0)
                 {
-                    if (IsSet(Splitter.mOutputStates[i],EOutputState::Connected))
+                    if (IsSet(Splitter.mReplicated.OutputStates[i],EOutputState::Connected))
                     {
-                        Splitter.mOutputStates[i] = ClearFlag(Splitter.mOutputStates[i],EOutputState::Connected);
+                        Splitter.mReplicated.OutputStates[i] = ClearFlag(Splitter.mReplicated.OutputStates[i],EOutputState::Connected);
                         Node.ConnectionStateChanged = true;
                     }
-                    if (IsSet(Splitter.mOutputStates[i], EOutputState::AutoSplitter))
+                    if (IsSet(Splitter.mReplicated.OutputStates[i], EOutputState::AutoSplitter))
                     {
-                        Splitter.mOutputStates[i] = ClearFlag(Splitter.mOutputStates[i],EOutputState::AutoSplitter);
+                        Splitter.mReplicated.OutputStates[i] = ClearFlag(Splitter.mReplicated.OutputStates[i],EOutputState::AutoSplitter);
                         Node.ConnectionStateChanged = true;
                     }
                     continue;
                 }
 
-                if (!IsSet(Splitter.mOutputStates[i], EOutputState::Connected))
+                if (!IsSet(Splitter.mReplicated.OutputStates[i], EOutputState::Connected))
                 {
-                    Splitter.mOutputStates[i] = SetFlag(Splitter.mOutputStates[i], EOutputState::Connected);
+                    Splitter.mReplicated.OutputStates[i] = SetFlag(Splitter.mReplicated.OutputStates[i], EOutputState::Connected);
                     Node.ConnectionStateChanged = true;
                 }
 
                 if (Node.Outputs[i])
                 {
-                    if (!IsSet(Splitter.mOutputStates[i], EOutputState::AutoSplitter))
+                    if (!IsSet(Splitter.mReplicated.OutputStates[i], EOutputState::AutoSplitter))
                     {
-                        Splitter.mOutputStates[i] = SetFlag(Splitter.mOutputStates[i],EOutputState::AutoSplitter);
+                        Splitter.mReplicated.OutputStates[i] = SetFlag(Splitter.mReplicated.OutputStates[i],EOutputState::AutoSplitter);
                         Node.ConnectionStateChanged = true;
                     }
                     auto& OutputNode = *Node.Outputs[i];
                     auto& OutputSplitter = *OutputNode.Splitter;
                     if (OutputSplitter.IsSplitterFlagSet(EPersistent::ManualInputRate))
                     {
-                        Splitter.mOutputStates[i] = ClearFlag(Splitter.mOutputStates[i],EOutputState::Automatic);
-                        Node.FixedDemand += OutputSplitter.mTargetInputRate;
+                        Splitter.mReplicated.OutputStates[i] = ClearFlag(Splitter.mReplicated.OutputStates[i],EOutputState::Automatic);
+                        Node.FixedDemand += OutputSplitter.mReplicated.TargetInputRate;
                     }
                     else
                     {
-                        Splitter.mOutputStates[i] = SetFlag(Splitter.mOutputStates[i],EOutputState::Automatic);
+                        Splitter.mReplicated.OutputStates[i] = SetFlag(Splitter.mReplicated.OutputStates[i],EOutputState::Automatic);
                         Node.Shares += OutputNode.Shares;
                         Node.FixedDemand += OutputNode.FixedDemand;
                     }
                 }
                 else
                 {
-                    if (IsSet(Splitter.mOutputStates[i], EOutputState::AutoSplitter))
+                    if (IsSet(Splitter.mReplicated.OutputStates[i], EOutputState::AutoSplitter))
                     {
-                        Splitter.mOutputStates[i] = ClearFlag(Splitter.mOutputStates[i],EOutputState::AutoSplitter);
+                        Splitter.mReplicated.OutputStates[i] = ClearFlag(Splitter.mReplicated.OutputStates[i],EOutputState::AutoSplitter);
                         Node.ConnectionStateChanged = true;
                     }
-                    if (IsSet(Splitter.mOutputStates[i],EOutputState::Automatic))
+                    if (IsSet(Splitter.mReplicated.OutputStates[i],EOutputState::Automatic))
                     {
                         Node.Shares += Node.PotentialShares[i];
                     }
                     else
                     {
-                        Node.FixedDemand += Splitter.mIntegralOutputRates[i];
+                        Node.FixedDemand += Splitter.mReplicated.OutputRates[i];
                     }
                 }
             }
@@ -1123,7 +1109,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
 
     // Ok, now for the hard part: distribute the available items
 
-    Network[0][0].AllocatedInputRate = Root->mTargetInputRate;
+    Network[0][0].AllocatedInputRate = Root->mReplicated.TargetInputRate;
     bool Valid = true;
     for (auto& Level : Network)
     {
@@ -1201,7 +1187,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                 {
                     if (Node.Outputs[i]->Splitter->IsSplitterFlagSet(EPersistent::ManualInputRate))
                     {
-                        Node.AllocatedOutputRates[i] = Node.Outputs[i]->Splitter->mTargetInputRate;
+                        Node.AllocatedOutputRates[i] = Node.Outputs[i]->Splitter->mReplicated.TargetInputRate;
                     }
                     else
                     {
@@ -1243,9 +1229,9 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                 }
                 else
                 {
-                    if (IsSet(Splitter.mOutputStates[i], EOutputState::Connected))
+                    if (IsSet(Splitter.mReplicated.OutputStates[i], EOutputState::Connected))
                     {
-                        if (IsSet(Splitter.mOutputStates[i], EOutputState::Automatic))
+                        if (IsSet(Splitter.mReplicated.OutputStates[i], EOutputState::Automatic))
                         {
                             int64 Rate = RatePerShare * Node.PotentialShares[i];
                             if (Remainder > 0)
@@ -1283,7 +1269,7 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
                         }
                         else
                         {
-                            Node.AllocatedOutputRates[i] = Splitter.mIntegralOutputRates[i];
+                            Node.AllocatedOutputRates[i] = Splitter.mReplicated.OutputRates[i];
                         }
                     }
                 }
@@ -1326,18 +1312,18 @@ std::tuple<bool,int32> AMFGBuildableAutoSplitter::Server_BalanceNetwork(AMFGBuil
             auto& Splitter = *Node.Splitter;
             bool NeedsSetupDistribution = Node.ConnectionStateChanged;
 
-            if (Splitter.mTargetInputRate != Node.AllocatedInputRate)
+            if (Splitter.mReplicated.TargetInputRate != Node.AllocatedInputRate)
             {
                 NeedsSetupDistribution = true;
-                Splitter.mTargetInputRate = Node.AllocatedInputRate;
+                Splitter.mReplicated.TargetInputRate = Node.AllocatedInputRate;
             }
 
             for (int32 i = 0 ; i < NUM_OUTPUTS ; ++i)
             {
-                if (IsSet(Splitter.mOutputStates[i],EOutputState::Connected) && Splitter.mIntegralOutputRates[i] != Node.AllocatedOutputRates[i])
+                if (IsSet(Splitter.mReplicated.OutputStates[i],EOutputState::Connected) && Splitter.mReplicated.OutputRates[i] != Node.AllocatedOutputRates[i])
                 {
                     NeedsSetupDistribution = true;
-                    Splitter.mIntegralOutputRates[i] = Node.AllocatedOutputRates[i];
+                    Splitter.mReplicated.OutputRates[i] = Node.AllocatedOutputRates[i];
                 }
             }
 
@@ -1405,7 +1391,6 @@ bool AMFGBuildableAutoSplitter::DiscoverHierarchy(
     {
         Nodes.Emplace();
     }
-    Splitter->mRootSplitter = Root;
     auto& Node = Nodes[Level][Nodes[Level].Emplace(Splitter,InputNode)];
     if (InputNode)
     {
@@ -1453,5 +1438,5 @@ void AMFGBuildableAutoSplitter::SetSplitterVersion(uint32 Version)
     {
         UE_LOG(LogAutoSplitters,Fatal,TEXT("Cannot downgrade Auto Splitter from version %d to %d"),GetSplitterVersion(),Version);
     }
-    mPersistentState = (mPersistentState & ~0xFFu) | (Version & 0xFFu);
+    mReplicated.PersistentState = (mReplicated.PersistentState & ~0xFFu) | (Version & 0xFFu);
 }
