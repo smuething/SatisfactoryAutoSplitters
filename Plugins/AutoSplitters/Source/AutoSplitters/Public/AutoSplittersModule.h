@@ -3,7 +3,10 @@
 // define to 1 to get more debug output to console when the debug flag is set in the splitter UI
 #define AUTO_SPLITTERS_DEBUG 1
 
+#include "CoreMinimal.h"
 #include <FGFactoryConnectionComponent.h>
+
+#include "AutoSplittersLog.h"
 
 #include "Buildables/MFGBuildableAutoSplitter.h"
 #include "Modules/ModuleManager.h"

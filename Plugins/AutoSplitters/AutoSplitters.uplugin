@@ -1,8 +1,8 @@
 {
 	"FileVersion": 3,
 	"Version": 0,
-	"VersionName": "0.4.0",
-	"SemVersion": "0.4.0",
+	"VersionName": "0.4.4",
+	"SemVersion": "0.4.4",
 	"FriendlyName": "Auto Splitters",
 	"Description": "Auto-balancing splitters for the rest of us who don't want to build gigantic load balancers.",
 	"Category": "Modding",
@@ -16,7 +16,7 @@
 	"IsExperimentalVersion": false,
 	"Installed": false,
 	"AcceptsAnyRemoteVersion": false,
-	"RemoteVersionRange": "0.4.0",
+	"RemoteVersionRange": "0.4.4",
 	"Modules": [
 		{
 			"Name": "AutoSplitters",
@@ -27,7 +27,7 @@
 	"Plugins": [
 		{
 			"Name": "SML",
-			"SemVersion": "^3.1.1",
+			"SemVersion": "^3.2.1",
 			"Enabled": true
 		}
 	]

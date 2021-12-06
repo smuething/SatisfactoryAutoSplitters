@@ -3,6 +3,7 @@
 #include "Buildables/MFGBuildableAutoSplitter.h"
 
 #include <numeric>
+#include <algorithm>
 
 #include "AutoSplittersLog.h"
 #include "AutoSplittersModule.h"
