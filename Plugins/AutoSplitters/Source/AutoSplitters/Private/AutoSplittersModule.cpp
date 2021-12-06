@@ -2,6 +2,7 @@
 
 #include "Patching/NativeHookManager.h"
 
+#include "CoreMinimal.h"
 #include "UI/FGPopupWidget.h"
 #include "FGWorldSettings.h"
 #include "FGPlayerController.h"
@@ -9,12 +10,18 @@
 #include "FGBuildableSubsystem.h"
 #include "Buildables/MFGBuildableAutoSplitter.h"
 #include "Hologram/MFGAutoSplitterHologram.h"
-#include "AutoSplittersLog.h"
 #include "Engine/RendererSettings.h"
 #include "Subsystem/AutoSplittersSubsystem.h"
 #include "Registry/ModContentRegistry.h"
 #include "Resources/FGBuildingDescriptor.h"
 #include "ModLoading/PluginModuleLoader.h"
+
+#define LOCTEXT_NAMESPACE "AutoSplitters"
+
+// Fixes linker bug
+DEFINE_LOG_CATEGORY(LogGame)
+
+DEFINE_LOG_CATEGORY(LogAutoSplitters)
 
 // #pragma optimize( "", off )
 
@@ -55,9 +62,9 @@ void FAutoSplittersModule::ReplacePreComponentFixSplitters(UWorld* World, AAutoS
 		if (RecipeInfo.OwnedByModReference != FName("AutoSplitters"))
 			continue;
 		auto Recipe = Cast<UFGRecipe>(RecipeInfo.RegisteredObject->GetDefaultObject());
-		if (Recipe->mProduct.Num() != 1)
+		if (Recipe->GetProducts().Num() != 1)
 			continue;
-		auto BuildingDescriptor = Recipe->mProduct[0].ItemClass->GetDefaultObject<UFGBuildingDescriptor>();
+		auto BuildingDescriptor = Recipe->GetProducts()[0].ItemClass->GetDefaultObject<UFGBuildingDescriptor>();
 		if (!BuildingDescriptor)
 			continue;
 
